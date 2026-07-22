@@ -1,0 +1,28 @@
+# Sirius-Agent 供应商配置示例
+#
+# 每个供应商配置包含六个字段：
+#   name      供应商标识名，用 `sirius-agent --provider <name>` 选择使用哪个
+#   protocol  决定走哪家协议，目前支持 anthropic / openai
+#   model     指定模型名
+#   base_url  请求的 API 地址
+#   api_key   鉴权密钥；支持 ${ENV_VAR} 占位符从环境变量读取，也可以直接写明文
+#   thinking  是否启用 Claude 的 extended thinking（可选，默认 false；仅 anthropic 协议有效）
+#
+# 不带 --provider 参数启动时，默认使用列表中的第一个配置。
+#
+# 复制这份文件为 sirius-agent.yaml 后再填入真实配置：
+#   copy sirius-agent.yaml.example sirius-agent.yaml
+# sirius-agent.yaml 已经在 .gitignore 里，不会被提交。
+
+- name: claude-prod
+  protocol: anthropic
+  model: claude-opus-4-6
+  base_url: https://api.anthropic.com
+  api_key: "${ANTHROPIC_API_KEY}"
+  thinking: true
+
+- name: gpt-prod
+  protocol: openai
+  model: gpt-5
+  base_url: https://api.openai.com/v1
+  api_key: "${OPENAI_API_KEY}"
