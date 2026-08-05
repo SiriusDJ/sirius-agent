@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from sirius_agent.tools.base import ToolResult
@@ -20,11 +21,12 @@ class EditFileTool:
         },
         "required": ["path", "old_text", "new_text"],
     }
+    safe = False
 
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = workspace_root
 
-    def execute(self, arguments: dict) -> ToolResult:
+    async def execute(self, arguments: dict) -> ToolResult:
         try:
             path = resolve_safe_path(self._workspace_root, arguments["path"])
         except PathOutsideWorkspaceError as e:
@@ -33,7 +35,7 @@ class EditFileTool:
         if not path.exists() or path.is_dir():
             return ToolResult(ok=False, content=f"文件不存在：{arguments['path']}")
 
-        content = path.read_text(encoding="utf-8")
+        content = await asyncio.to_thread(path.read_text, encoding="utf-8")
         old_text = arguments["old_text"]
         count = content.count(old_text)
 
@@ -46,6 +48,6 @@ class EditFileTool:
             )
 
         new_content = content.replace(old_text, arguments["new_text"], 1)
-        path.write_text(new_content, encoding="utf-8")
+        await asyncio.to_thread(path.write_text, new_content, encoding="utf-8")
 
         return ToolResult(ok=True, content=f"已完成替换：{arguments['path']}")

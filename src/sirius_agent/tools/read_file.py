@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from sirius_agent.tools.base import ToolResult
@@ -18,11 +19,12 @@ class ReadFileTool:
         },
         "required": ["path"],
     }
+    safe = True
 
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = workspace_root
 
-    def execute(self, arguments: dict) -> ToolResult:
+    async def execute(self, arguments: dict) -> ToolResult:
         try:
             path = resolve_safe_path(self._workspace_root, arguments["path"])
         except PathOutsideWorkspaceError as e:
@@ -34,7 +36,7 @@ class ReadFileTool:
             return ToolResult(ok=False, content=f"这是一个目录，不是文件：{arguments['path']}")
 
         try:
-            content = path.read_text(encoding="utf-8")
+            content = await asyncio.to_thread(path.read_text, encoding="utf-8")
         except UnicodeDecodeError:
             return ToolResult(ok=False, content=f"文件不是可读的 UTF-8 文本：{arguments['path']}")
 

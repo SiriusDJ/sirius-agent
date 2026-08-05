@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import Iterator, Optional
+from typing import AsyncIterator, Optional
 
 import anthropic
 
 from sirius_agent.config import ProviderConfig
-from sirius_agent.providers.base import Message, StreamEvent, StreamEventType
+from sirius_agent.providers.base import Message, StreamEvent, StreamEventType, TokenUsage
 from sirius_agent.tools.base import Tool, ToolCall
 from sirius_agent.tools.schema import to_anthropic_tool_schema
 
@@ -52,14 +52,14 @@ class AnthropicProvider:
 
     def __init__(self, config: ProviderConfig) -> None:
         self._config = config
-        self._client = anthropic.Anthropic(
+        self._client = anthropic.AsyncAnthropic(
             api_key=config.api_key,
             base_url=config.base_url,
         )
 
-    def stream_chat(
+    async def stream_chat(
         self, messages: list[Message], tools: Optional[list[Tool]] = None
-    ) -> Iterator[StreamEvent]:
+    ) -> AsyncIterator[StreamEvent]:
         request_kwargs: dict = dict(
             model=self._config.model,
             max_tokens=_MAX_TOKENS,
@@ -75,8 +75,8 @@ class AnthropicProvider:
         tool_use_blocks: dict[int, dict] = {}
 
         try:
-            with self._client.messages.stream(**request_kwargs) as stream:
-                for event in stream:
+            async with self._client.messages.stream(**request_kwargs) as stream:
+                async for event in stream:
                     if event.type == "content_block_start":
                         block = event.content_block
                         if block.type == "tool_use":
@@ -107,6 +107,15 @@ class AnthropicProvider:
                                     arguments=arguments,
                                 ),
                             )
+
+                final_message = await stream.get_final_message()
+                yield StreamEvent(
+                    type=StreamEventType.USAGE,
+                    usage=TokenUsage(
+                        input_tokens=final_message.usage.input_tokens,
+                        output_tokens=final_message.usage.output_tokens,
+                    ),
+                )
         except anthropic.APIError as e:
             yield StreamEvent(type=StreamEventType.ERROR, error_message=str(e))
             return

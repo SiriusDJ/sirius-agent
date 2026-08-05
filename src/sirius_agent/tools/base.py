@@ -34,7 +34,10 @@ class Tool(Protocol):
     name: str
     description: str
     parameters_schema: dict
+    safe: bool
+        # True=只读、无副作用，可在同一轮内与其他 safe 工具并发执行
+        # False=有副作用（写文件/改文件/执行命令），须与其他工具串行执行
 
-    def execute(self, arguments: dict) -> ToolResult:
+    async def execute(self, arguments: dict) -> ToolResult:
         """执行工具并返回结构化结果。"""
         ...

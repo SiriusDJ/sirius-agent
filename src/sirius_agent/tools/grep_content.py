@@ -2,11 +2,34 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 
 from sirius_agent.tools.base import ToolResult
 from sirius_agent.tools.paths import is_ignored, is_within_workspace
+
+
+def _grep_sync(root: Path, regex: re.Pattern[str], file_glob: str) -> list[str]:
+    hits: list[str] = []
+    for candidate in root.rglob(file_glob):
+        if not candidate.is_file():
+            continue
+        if not is_within_workspace(root, candidate):
+            continue
+        relative = candidate.resolve().relative_to(root.resolve())
+        if is_ignored(relative):
+            continue
+
+        try:
+            text = candidate.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            if regex.search(line):
+                hits.append(f"{relative.as_posix()}:{line_no}: {line}")
+    return hits
 
 
 class GrepContentTool:
@@ -23,39 +46,21 @@ class GrepContentTool:
         },
         "required": ["pattern"],
     }
+    safe = True
 
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = workspace_root
 
-    def execute(self, arguments: dict) -> ToolResult:
+    async def execute(self, arguments: dict) -> ToolResult:
         pattern = arguments["pattern"]
         file_glob = arguments.get("file_glob") or "*"
-        root = self._workspace_root
 
         try:
             regex = re.compile(pattern)
         except re.error as e:
             return ToolResult(ok=False, content=f"正则表达式无效：{e}")
 
-        hits: list[str] = []
-        for candidate in root.rglob(file_glob):
-            if not candidate.is_file():
-                continue
-            if not is_within_workspace(root, candidate):
-                continue
-            relative = candidate.resolve().relative_to(root.resolve())
-            if is_ignored(relative):
-                continue
-
-            try:
-                text = candidate.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
-                continue
-
-            for line_no, line in enumerate(text.splitlines(), start=1):
-                if regex.search(line):
-                    hits.append(f"{relative.as_posix()}:{line_no}: {line}")
-
+        hits = await asyncio.to_thread(_grep_sync, self._workspace_root, regex, file_glob)
         if not hits:
             return ToolResult(ok=True, content="未找到匹配")
         return ToolResult(ok=True, content="\n".join(hits))

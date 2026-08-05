@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from sirius_agent.tools.base import ToolResult
 from sirius_agent.tools.paths import PathOutsideWorkspaceError, resolve_safe_path
+
+
+def _write_sync(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
 
 
 class WriteFileTool:
@@ -19,19 +25,18 @@ class WriteFileTool:
         },
         "required": ["path", "content"],
     }
+    safe = False
 
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = workspace_root
 
-    def execute(self, arguments: dict) -> ToolResult:
+    async def execute(self, arguments: dict) -> ToolResult:
         try:
             path = resolve_safe_path(self._workspace_root, arguments["path"])
         except PathOutsideWorkspaceError as e:
             return ToolResult(ok=False, content=str(e))
 
-        content = arguments["content"]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data = content.encode("utf-8")
-        path.write_bytes(data)
+        data = arguments["content"].encode("utf-8")
+        await asyncio.to_thread(_write_sync, path, data)
 
         return ToolResult(ok=True, content=f"已写入 {len(data)} 字节到 {arguments['path']}")

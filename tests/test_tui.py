@@ -1,0 +1,91 @@
+"""tui.py 的 /plan /do 模式切换与事件渲染测试（不测真实终端按键监听，那部分在 checklist 用 tmux 验证）。"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+
+import pytest
+from rich.console import Console
+
+from sirius_agent import tui
+from sirius_agent.agent import StopReason, TurnEvent, TurnEventType
+from sirius_agent.providers.base import TokenUsage
+from sirius_agent.tools.base import ToolResult
+
+
+class _FakePromptSession:
+    """按顺序返回预设输入的假 PromptSession，替代真实终端读取。"""
+
+    def __init__(self, inputs: list[str]) -> None:
+        self._inputs = iter(inputs)
+
+    async def prompt_async(self, _prompt: str) -> str:
+        try:
+            return next(self._inputs)
+        except StopIteration:
+            raise EOFError from None
+
+
+async def test_plan_do_toggle_controls_tools_enabled(monkeypatch):
+    recorded_tools_enabled: list[bool] = []
+
+    async def _fake_run_agent_loop(provider, tool_registry, session, user_text, cancel_event, tools_enabled=True):
+        recorded_tools_enabled.append(tools_enabled)
+        yield TurnEvent(type=TurnEventType.STOPPED, stop_reason=StopReason.COMPLETED)
+
+    async def _fake_watch_cancel_keys(cancel_event):
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(tui, "run_agent_loop", _fake_run_agent_loop)
+    monkeypatch.setattr(tui, "_watch_cancel_keys", _fake_watch_cancel_keys)
+    monkeypatch.setattr(
+        tui, "PromptSession", lambda: _FakePromptSession(["hello", "/plan", "hello again", "/do", "final", "/exit"])
+    )
+
+    await tui.run_repl(provider=object(), tool_registry=object(), session=object())
+
+    assert recorded_tools_enabled == [True, False, True]
+
+
+def test_render_covers_all_event_types_and_stop_reasons():
+    buffer = io.StringIO()
+    console = Console(file=buffer, force_terminal=False, no_color=True, width=100)
+
+    tui._render(console, TurnEvent(type=TurnEventType.THINKING_DELTA, text="thinking..."))
+    tui._render(console, TurnEvent(type=TurnEventType.TEXT_DELTA, text="hello"))
+    tui._render(
+        console,
+        TurnEvent(type=TurnEventType.TOOL_STARTED, tool_name="read_file", tool_arguments={"path": "a.txt"}),
+    )
+    tui._render(
+        console,
+        TurnEvent(type=TurnEventType.TOOL_FINISHED, tool_name="read_file", tool_result=ToolResult(ok=True, content="ok")),
+    )
+    tui._render(
+        console,
+        TurnEvent(
+            type=TurnEventType.TOOL_FINISHED,
+            tool_name="write_file",
+            tool_result=ToolResult(ok=False, content="失败原因"),
+        ),
+    )
+    tui._render(console, TurnEvent(type=TurnEventType.USAGE, usage=TokenUsage(input_tokens=10, output_tokens=5)))
+    tui._render(console, TurnEvent(type=TurnEventType.STOPPED, stop_reason=StopReason.COMPLETED))
+    tui._render(console, TurnEvent(type=TurnEventType.STOPPED, stop_reason=StopReason.MAX_ITERATIONS))
+    tui._render(console, TurnEvent(type=TurnEventType.STOPPED, stop_reason=StopReason.USER_CANCELLED))
+    tui._render(console, TurnEvent(type=TurnEventType.STOPPED, stop_reason=StopReason.UNKNOWN_TOOL))
+    tui._render(console, TurnEvent(type=TurnEventType.STOPPED, stop_reason=StopReason.STREAM_ERROR, error_message="断网了"))
+
+    output = buffer.getvalue()
+
+    assert "thinking..." in output
+    assert "hello" in output
+    assert "执行 read_file" in output
+    assert "完成：ok" in output
+    assert "失败：失败原因" in output
+    assert "输入 10 / 输出 5" in output
+    assert "已达到最大迭代轮数" in output
+    assert "已取消" in output
+    assert "模型连续请求未知工具" in output
+    assert "错误：断网了" in output

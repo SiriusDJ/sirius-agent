@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import Iterator, Optional
+from typing import AsyncIterator, Optional
 
 import openai
 
 from sirius_agent.config import ProviderConfig
-from sirius_agent.providers.base import Message, StreamEvent, StreamEventType
+from sirius_agent.providers.base import Message, StreamEvent, StreamEventType, TokenUsage
 from sirius_agent.tools.base import Tool, ToolCall
 from sirius_agent.tools.schema import to_openai_tool_schema
 
@@ -50,18 +50,19 @@ class OpenAIProvider:
 
     def __init__(self, config: ProviderConfig) -> None:
         self._config = config
-        self._client = openai.OpenAI(
+        self._client = openai.AsyncOpenAI(
             api_key=config.api_key,
             base_url=config.base_url,
         )
 
-    def stream_chat(
+    async def stream_chat(
         self, messages: list[Message], tools: Optional[list[Tool]] = None
-    ) -> Iterator[StreamEvent]:
+    ) -> AsyncIterator[StreamEvent]:
         request_kwargs: dict = dict(
             model=self._config.model,
             messages=_to_openai_messages(messages),
             stream=True,
+            stream_options={"include_usage": True},
         )
         if tools:
             request_kwargs["tools"] = to_openai_tool_schema(tools)
@@ -71,8 +72,19 @@ class OpenAIProvider:
         tool_call_buffers: dict[int, dict] = {}
 
         try:
-            stream = self._client.chat.completions.create(**request_kwargs)
-            for chunk in stream:
+            stream = await self._client.chat.completions.create(**request_kwargs)
+            async for chunk in stream:
+                # 开启 stream_options.include_usage 后，最后一个 chunk 的 choices 为空、
+                # 只带 usage；必须先检查 usage 再判断 choices 是否为空，否则会漏掉这个事件
+                if chunk.usage is not None:
+                    yield StreamEvent(
+                        type=StreamEventType.USAGE,
+                        usage=TokenUsage(
+                            input_tokens=chunk.usage.prompt_tokens,
+                            output_tokens=chunk.usage.completion_tokens,
+                        ),
+                    )
+
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 from pathlib import Path
 
@@ -54,7 +55,7 @@ def main() -> None:
 
     tool_registry = _build_tool_registry(Path.cwd())
     session = ConversationSession()
-    run_repl(provider, tool_registry, session)
+    asyncio.run(run_repl(provider, tool_registry, session))
 
 
 if __name__ == "__main__":
