@@ -23,7 +23,7 @@ def _grep_sync(root: Path, regex: re.Pattern[str], file_glob: str) -> list[str]:
 
         try:
             text = candidate.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
+        except UnicodeDecodeError, OSError:
             continue
 
         for line_no, line in enumerate(text.splitlines(), start=1):

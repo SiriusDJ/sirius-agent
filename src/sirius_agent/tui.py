@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from pathlib import Path
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.input import create_input
@@ -80,7 +81,9 @@ def _render(console: Console, turn_event) -> None:
         usage = turn_event.usage
         console.print()
         console.print(
-            f"[本轮用量：输入 {usage.input_tokens} / 输出 {usage.output_tokens} tokens]",
+            f"[本轮用量：输入 {usage.input_tokens} / 输出 {usage.output_tokens} tokens，"
+            f"缓存写入 {usage.cache_creation_input_tokens} / "
+            f"缓存命中 {usage.cache_read_input_tokens} tokens]",
             style=_USAGE_STYLE,
             markup=False,
             highlight=False,
@@ -95,7 +98,9 @@ def _render(console: Console, turn_event) -> None:
         # StopReason.COMPLETED：不额外打印，只换行结束
 
 
-async def run_repl(provider: Provider, tool_registry: ToolRegistry, session: ConversationSession) -> None:
+async def run_repl(
+    provider: Provider, tool_registry: ToolRegistry, session: ConversationSession, workspace_root: Path
+) -> None:
     """进入交互式对话循环，直到用户输入退出指令或按 Ctrl+D。"""
 
     prompt_session: PromptSession = PromptSession()
@@ -115,6 +120,7 @@ async def run_repl(provider: Provider, tool_registry: ToolRegistry, session: Con
             break
         if stripped == _PLAN_COMMAND:
             plan_mode = True
+            session.enter_plan_mode()
             console.print("[已进入计划模式，仅只读工具可用，输入 /do 切回全工具模式]", style="bold cyan")
             continue
         if stripped == _DO_COMMAND:
@@ -128,7 +134,13 @@ async def run_repl(provider: Provider, tool_registry: ToolRegistry, session: Con
         watcher_task = asyncio.create_task(_watch_cancel_keys(cancel_event))
         try:
             async for turn_event in run_agent_loop(
-                provider, tool_registry, session, text, cancel_event, tools_enabled=not plan_mode
+                provider,
+                tool_registry,
+                session,
+                text,
+                cancel_event,
+                workspace_root,
+                tools_enabled=not plan_mode,
             ):
                 _render(console, turn_event)
         finally:

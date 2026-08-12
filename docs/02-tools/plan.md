@@ -20,50 +20,50 @@ from typing import Iterator, Optional, Protocol
 
 
 class StreamEventType(Enum):
-    TEXT_DELTA = "text_delta"          # 正式回答的文本增量
+    TEXT_DELTA = "text_delta"  # 正式回答的文本增量
     THINKING_DELTA = "thinking_delta"  # extended thinking 的文本增量
-    TOOL_CALL = "tool_call"            # 新增：模型请求一次工具调用，参数已拼接、解析完整
-    DONE = "done"                      # 本轮流式响应结束
-    ERROR = "error"                    # 请求过程中出错
+    TOOL_CALL = "tool_call"  # 新增：模型请求一次工具调用，参数已拼接、解析完整
+    DONE = "done"  # 本轮流式响应结束
+    ERROR = "error"  # 请求过程中出错
 
 
 @dataclass
 class ToolCall:
-    id: str                    # 本次调用的唯一标识（供应商返回，用于把结果关联回去）
-    name: str                  # 工具名，如 "read_file"
-    arguments: dict            # 已解析好的参数字典（不再是 JSON 碎片）
+    id: str  # 本次调用的唯一标识（供应商返回，用于把结果关联回去）
+    name: str  # 工具名，如 "read_file"
+    arguments: dict  # 已解析好的参数字典（不再是 JSON 碎片）
 
 
 @dataclass
 class StreamEvent:
     type: StreamEventType
-    text: Optional[str] = None          # TEXT_DELTA / THINKING_DELTA 时携带增量内容
+    text: Optional[str] = None  # TEXT_DELTA / THINKING_DELTA 时携带增量内容
     error_message: Optional[str] = None  # ERROR 时携带可读错误信息
     tool_call: Optional[ToolCall] = None  # TOOL_CALL 时携带完整的工具调用请求
 
 
 @dataclass
 class ToolResult:
-    ok: bool        # 工具是否执行成功
-    content: str    # 成功时是工具产出内容（文件内容/命令输出/匹配列表等）；
-                     # 失败时是清晰的错误描述（对应 N1），供模型和终端展示复用同一份文本
+    ok: bool  # 工具是否执行成功
+    content: str  # 成功时是工具产出内容（文件内容/命令输出/匹配列表等）；
+    # 失败时是清晰的错误描述（对应 N1），供模型和终端展示复用同一份文本
 
 
 @dataclass
 class Message:
-    role: str                                    # "user" | "assistant" | "tool"
-    content: str = ""                             # 纯文本内容（user/assistant 文本消息使用）
+    role: str  # "user" | "assistant" | "tool"
+    content: str = ""  # 纯文本内容（user/assistant 文本消息使用）
     tool_calls: list[ToolCall] = field(default_factory=list)
-        # role="assistant" 且模型请求了工具调用时使用；文本回复用 content，工具调用请求用这个字段，
-        # 二者可能同时非空（模型一边说话一边调用工具）
+    # role="assistant" 且模型请求了工具调用时使用；文本回复用 content，工具调用请求用这个字段，
+    # 二者可能同时非空（模型一边说话一边调用工具）
     tool_call_id: Optional[str] = None
-        # role="tool" 时必填，标识这是对哪一次 ToolCall 的结果响应
+    # role="tool" 时必填，标识这是对哪一次 ToolCall 的结果响应
 
 
 class Tool(Protocol):
-    name: str                    # 工具名，供模型和注册中心按名引用
-    description: str             # 给模型看的自然语言描述，说明这个工具是干什么的
-    parameters_schema: dict      # JSON Schema，描述 execute 期望的 arguments 结构
+    name: str  # 工具名，供模型和注册中心按名引用
+    description: str  # 给模型看的自然语言描述，说明这个工具是干什么的
+    parameters_schema: dict  # JSON Schema，描述 execute 期望的 arguments 结构
 
     def execute(self, arguments: dict) -> ToolResult:
         """执行工具；工具自身负责把可预期的失败（文件不存在、匹配失败等）转成
@@ -72,9 +72,7 @@ class Tool(Protocol):
 
 
 class Provider(Protocol):
-    def stream_chat(
-        self, messages: list[Message], tools: list[Tool] | None = None
-    ) -> Iterator[StreamEvent]:
+    def stream_chat(self, messages: list[Message], tools: list[Tool] | None = None) -> Iterator[StreamEvent]:
         """发送带完整历史的对话请求；tools 非空时把工具描述一并发给模型，
         并在流式响应中识别、拼接、产出 TOOL_CALL 事件"""
         ...
@@ -99,7 +97,9 @@ class Tool(Protocol):
     name: str
     description: str
     parameters_schema: dict
+
     def execute(self, arguments: dict) -> ToolResult: ...
+
 
 @dataclass
 class ToolCall:
@@ -107,27 +107,33 @@ class ToolCall:
     name: str
     arguments: dict
 
+
 @dataclass
 class ToolResult:
     ok: bool
     content: str
+
 
 # tools/registry.py
 class ToolRegistry:
     def register(self, tool: Tool) -> None: ...
     def get(self, name: str) -> Tool:
         """找不到抛 ToolError"""
+
     def list_tools(self) -> list[Tool]: ...
     def execute(self, name: str, arguments: dict) -> ToolResult:
         """按名查找并执行；工具内部未捕获的异常在这里兜底捕获，
         转成 ok=False 的 ToolResult（对应 N2/AC13 的第二道防线）"""
 
+
 # tools/schema.py
 def to_anthropic_tool_schema(tools: list[Tool]) -> list[dict]: ...
 def to_openai_tool_schema(tools: list[Tool]) -> list[dict]: ...
 
+
 # tools/paths.py
 class PathOutsideWorkspaceError(Exception): ...
+
 
 def resolve_safe_path(workspace_root: Path, user_path: str) -> Path:
     """把 user_path 相对 workspace_root 解析成绝对路径并 resolve()；
@@ -181,10 +187,11 @@ class ConversationSession:
 class TurnEventType(Enum):
     THINKING_DELTA = "thinking_delta"
     TEXT_DELTA = "text_delta"
-    TOOL_STARTED = "tool_started"    # 携带 tool_name、tool_arguments
+    TOOL_STARTED = "tool_started"  # 携带 tool_name、tool_arguments
     TOOL_FINISHED = "tool_finished"  # 携带 tool_name、tool_result
     ERROR = "error"
     DONE = "done"
+
 
 @dataclass
 class TurnEvent:
@@ -194,6 +201,7 @@ class TurnEvent:
     tool_arguments: Optional[dict] = None
     tool_result: Optional[ToolResult] = None
     error_message: Optional[str] = None
+
 
 def run_turn(
     provider: Provider,

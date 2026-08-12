@@ -30,9 +30,7 @@ async def test_timeout(tmp_path: Path):
     tool = ExecuteCommandTool(tmp_path, timeout=0.1)
 
     start = time.monotonic()
-    result = await tool.execute(
-        {"command": f'"{sys.executable}" -c "import time; time.sleep(2)"'}
-    )
+    result = await tool.execute({"command": f'"{sys.executable}" -c "import time; time.sleep(2)"'})
     elapsed = time.monotonic() - start
 
     assert result.ok is False

@@ -6,7 +6,6 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -41,8 +40,7 @@ def _expand_env_placeholders(value: str, *, provider_name: str) -> str:
         var_name = match.group(1)
         if var_name not in os.environ:
             raise ConfigError(
-                f"供应商 '{provider_name}' 的 api_key 引用了环境变量 '{var_name}'，"
-                f"但该环境变量未设置"
+                f"供应商 '{provider_name}' 的 api_key 引用了环境变量 '{var_name}'，但该环境变量未设置"
             )
         return os.environ[var_name]
 
@@ -71,9 +69,7 @@ def load_provider_configs(path: str) -> list[ProviderConfig]:
 
         missing = [field for field in _REQUIRED_FIELDS if field not in entry]
         if missing:
-            raise ConfigError(
-                f"供应商 '{entry_name}' 缺少必需字段：{', '.join(missing)}"
-            )
+            raise ConfigError(f"供应商 '{entry_name}' 缺少必需字段：{', '.join(missing)}")
 
         protocol = entry["protocol"]
         if protocol not in _SUPPORTED_PROTOCOLS:
@@ -98,9 +94,7 @@ def load_provider_configs(path: str) -> list[ProviderConfig]:
     return configs
 
 
-def select_provider_config(
-    configs: list[ProviderConfig], name: Optional[str]
-) -> ProviderConfig:
+def select_provider_config(configs: list[ProviderConfig], name: str | None) -> ProviderConfig:
     """按 name 选出目标供应商配置；name 为 None 时返回第一个。"""
 
     if name is None:

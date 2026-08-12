@@ -33,12 +33,8 @@ def _build_tool_registry(workspace_root: Path) -> ToolRegistry:
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="sirius-agent", description="终端流式 AI 对话助手")
-    parser.add_argument(
-        "--config", default="sirius-agent.yaml", help="YAML 配置文件路径（默认：./sirius-agent.yaml）"
-    )
-    parser.add_argument(
-        "--provider", default=None, help="要使用的供应商 name（默认：配置文件中的第一个）"
-    )
+    parser.add_argument("--config", default="sirius-agent.yaml", help="YAML 配置文件路径（默认：./sirius-agent.yaml）")
+    parser.add_argument("--provider", default=None, help="要使用的供应商 name（默认：配置文件中的第一个）")
     return parser.parse_args(argv)
 
 
@@ -53,9 +49,10 @@ def main() -> None:
         print(f"错误：{e}", file=sys.stderr)
         sys.exit(1)
 
-    tool_registry = _build_tool_registry(Path.cwd())
+    workspace_root = Path.cwd()
+    tool_registry = _build_tool_registry(workspace_root)
     session = ConversationSession()
-    asyncio.run(run_repl(provider, tool_registry, session))
+    asyncio.run(run_repl(provider, tool_registry, session, workspace_root))
 
 
 if __name__ == "__main__":

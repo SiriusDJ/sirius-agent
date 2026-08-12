@@ -15,7 +15,10 @@ _DEFAULT_TIMEOUT = 30.0
 
 class ExecuteCommandTool:
     name = "execute_command"
-    description = "在工作目录下执行一条 shell 命令，返回 stdout/stderr/退出码"
+    description = (
+        "在工作目录下执行一条 shell 命令，返回 stdout/stderr/退出码。"
+        "不要用它来读文件、搜索内容或查找文件，这些场景请优先使用 read_file / grep_content / glob_files"
+    )
     parameters_schema = {
         "type": "object",
         "properties": {
@@ -41,7 +44,7 @@ class ExecuteCommandTool:
         )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self._timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await self._kill_process_tree(proc)
             return ToolResult(ok=False, content=f"命令执行超时（{self._timeout:g} 秒）：{command}")
 

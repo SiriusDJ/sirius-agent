@@ -11,9 +11,19 @@ class ConversationSession:
 
     def __init__(self) -> None:
         self._messages: list[Message] = []
+        self._plan_mode_round: int = 0
 
     def add_user_message(self, content: str) -> None:
         self._messages.append(Message(role="user", content=content))
+
+    def enter_plan_mode(self) -> None:
+        """进入 Plan Mode，轮次计数器归零。"""
+        self._plan_mode_round = 0
+
+    def next_plan_mode_round(self) -> int:
+        """Plan Mode 轮次计数器 +1 并返回新值，供调用方判断这一轮要不要注入提醒。"""
+        self._plan_mode_round += 1
+        return self._plan_mode_round
 
     def add_assistant_message(self, content: str) -> None:
         self._messages.append(Message(role="assistant", content=content))

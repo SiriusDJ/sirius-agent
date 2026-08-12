@@ -20,6 +20,7 @@ from typing import AsyncIterator, Optional, Protocol
 
 # ---- providers/base.py ----
 
+
 @dataclass
 class TokenUsage:
     input_tokens: int
@@ -30,7 +31,7 @@ class StreamEventType(Enum):
     TEXT_DELTA = "text_delta"
     THINKING_DELTA = "thinking_delta"
     TOOL_CALL = "tool_call"
-    USAGE = "usage"          # 新增：本次请求的 token 用量，流结束前产出
+    USAGE = "usage"  # 新增：本次请求的 token 用量，流结束前产出
     DONE = "done"
     ERROR = "error"
 
@@ -41,7 +42,7 @@ class StreamEvent:
     text: Optional[str] = None
     error_message: Optional[str] = None
     tool_call: Optional["ToolCall"] = None
-    usage: Optional[TokenUsage] = None      # 新增
+    usage: Optional[TokenUsage] = None  # 新增
 
 
 class Provider(Protocol):
@@ -54,25 +55,27 @@ class Provider(Protocol):
 
 # ---- tools/base.py ----
 
+
 class Tool(Protocol):
     name: str
     description: str
     parameters_schema: dict
     safe: bool
-        # True=只读、无副作用（可在同一轮内与其他 safe 工具并发执行）
-        # False=有副作用（写文件/改文件/执行命令，须与其他工具串行执行）
+    # True=只读、无副作用（可在同一轮内与其他 safe 工具并发执行）
+    # False=有副作用（写文件/改文件/执行命令，须与其他工具串行执行）
 
     async def execute(self, arguments: dict) -> ToolResult: ...
 
 
 # ---- agent.py ----
 
+
 class StopReason(Enum):
-    COMPLETED = "completed"              # 模型不再请求工具，正常结束
-    MAX_ITERATIONS = "max_iterations"    # 达到默认 20 轮迭代上限
-    USER_CANCELLED = "user_cancelled"    # 用户按 Esc/Ctrl+C 取消
-    UNKNOWN_TOOL = "unknown_tool"        # 连续两轮出现未知工具调用
-    STREAM_ERROR = "stream_error"        # LLM 请求流式出错
+    COMPLETED = "completed"  # 模型不再请求工具，正常结束
+    MAX_ITERATIONS = "max_iterations"  # 达到默认 20 轮迭代上限
+    USER_CANCELLED = "user_cancelled"  # 用户按 Esc/Ctrl+C 取消
+    UNKNOWN_TOOL = "unknown_tool"  # 连续两轮出现未知工具调用
+    STREAM_ERROR = "stream_error"  # LLM 请求流式出错
 
 
 class TurnEventType(Enum):
@@ -81,7 +84,7 @@ class TurnEventType(Enum):
     TOOL_STARTED = "tool_started"
     TOOL_FINISHED = "tool_finished"
     USAGE = "usage"
-    STOPPED = "stopped"     # 循环结束（唯一的终止事件，具体原因看 stop_reason）
+    STOPPED = "stopped"  # 循环结束（唯一的终止事件，具体原因看 stop_reason）
 
 
 @dataclass
@@ -93,8 +96,8 @@ class TurnEvent:
     tool_result: Optional["ToolResult"] = None
     usage: Optional[TokenUsage] = None
     stop_reason: Optional[StopReason] = None
-    error_message: Optional[str] = None    # stop_reason=STREAM_ERROR 时携带
-    iteration: int = 0                      # 当前第几轮（1-based），供界面展示进度
+    error_message: Optional[str] = None  # stop_reason=STREAM_ERROR 时携带
+    iteration: int = 0  # 当前第几轮（1-based），供界面展示进度
 ```
 
 要点说明：
@@ -116,8 +119,10 @@ class ToolRegistry:
     def get(self, name: str) -> Tool: ...
     def has(self, name: str) -> bool:
         """新增：判断某个工具名是否已注册，供 agent 判断"未知工具"用"""
+
     def list_tools(self, only_safe: bool = False) -> list[Tool]:
         """only_safe=True 时只返回 safe=True 的工具（供 Plan Mode 使用）"""
+
     async def execute(self, name: str, arguments: dict) -> ToolResult:
         """按名查找并 await 执行；找不到工具（ToolError）或工具内部未预期异常，
         都统一兜底转成 ok=False 的 ToolResult，不向上抛出"""
@@ -166,6 +171,7 @@ class ToolRegistry:
 _MAX_ITERATIONS = 20
 _MAX_CONSECUTIVE_UNKNOWN_TOOL_ROUNDS = 2
 
+
 class StreamCollector:
     """把一次 stream_chat 的事件双路处理：一路实时转发成 TurnEvent，
     一路在内部累积出这一次请求的完整文本/工具调用/用量，供循环下一步判断使用。"""
@@ -176,9 +182,7 @@ class StreamCollector:
         self.usage: Optional[TokenUsage] = None
         self.error_message: Optional[str] = None
 
-    async def consume(
-        self, stream: AsyncIterator[StreamEvent], iteration: int
-    ) -> AsyncIterator[TurnEvent]:
+    async def consume(self, stream: AsyncIterator[StreamEvent], iteration: int) -> AsyncIterator[TurnEvent]:
         """逐个消费 stream 的事件：THINKING_DELTA/TEXT_DELTA 实时 yield 并累积文本；
         TOOL_CALL 累积进 tool_calls；USAGE 记录并 yield；ERROR 记录 error_message 后停止消费；
         DONE 结束消费。消费完毕后 self.text/tool_calls/usage/error_message 可供调用方读取。"""
@@ -215,9 +219,7 @@ async def run_agent_loop(
 
 **对外接口：**
 ```python
-async def run_repl(
-    provider: Provider, tool_registry: ToolRegistry, session: ConversationSession
-) -> None:
+async def run_repl(provider: Provider, tool_registry: ToolRegistry, session: ConversationSession) -> None:
     """交互式主循环：
     - 读到 /exit 或 Ctrl+D → 结束程序
     - 读到 /plan → 进入计划模式（之后每轮调用 run_agent_loop 时 tools_enabled=False）

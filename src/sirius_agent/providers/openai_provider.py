@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import AsyncIterator, Optional
+from collections.abc import AsyncIterator
 
 import openai
 
 from sirius_agent.config import ProviderConfig
+from sirius_agent.prompt.builder import SystemPromptBlock
 from sirius_agent.providers.base import Message, StreamEvent, StreamEventType, TokenUsage
 from sirius_agent.tools.base import Tool, ToolCall
 from sirius_agent.tools.schema import to_openai_tool_schema
@@ -19,9 +20,7 @@ def _to_openai_messages(messages: list[Message]) -> list[dict]:
     result: list[dict] = []
     for m in messages:
         if m.role == "tool":
-            result.append(
-                {"role": "tool", "tool_call_id": m.tool_call_id, "content": m.content}
-            )
+            result.append({"role": "tool", "tool_call_id": m.tool_call_id, "content": m.content})
         elif m.role == "assistant" and m.tool_calls:
             result.append(
                 {
@@ -55,12 +54,24 @@ class OpenAIProvider:
             base_url=config.base_url,
         )
 
+    @property
+    def config(self) -> ProviderConfig:
+        return self._config
+
     async def stream_chat(
-        self, messages: list[Message], tools: Optional[list[Tool]] = None
+        self,
+        messages: list[Message],
+        tools: list[Tool] | None = None,
+        system_prompt: list[SystemPromptBlock] | None = None,
     ) -> AsyncIterator[StreamEvent]:
+        openai_messages = _to_openai_messages(messages)
+        if system_prompt:
+            combined_text = "\n\n".join(block.text for block in system_prompt)
+            openai_messages = [{"role": "system", "content": combined_text}] + openai_messages
+
         request_kwargs: dict = dict(
             model=self._config.model,
-            messages=_to_openai_messages(messages),
+            messages=openai_messages,
             stream=True,
             stream_options={"include_usage": True},
         )
@@ -77,11 +88,14 @@ class OpenAIProvider:
                 # 开启 stream_options.include_usage 后，最后一个 chunk 的 choices 为空、
                 # 只带 usage；必须先检查 usage 再判断 choices 是否为空，否则会漏掉这个事件
                 if chunk.usage is not None:
+                    details = getattr(chunk.usage, "prompt_tokens_details", None)
                     yield StreamEvent(
                         type=StreamEventType.USAGE,
                         usage=TokenUsage(
                             input_tokens=chunk.usage.prompt_tokens,
                             output_tokens=chunk.usage.completion_tokens,
+                            cache_creation_input_tokens=getattr(details, "cache_write_tokens", 0) or 0,
+                            cache_read_input_tokens=getattr(details, "cached_tokens", 0) or 0,
                         ),
                     )
 

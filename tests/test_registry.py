@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from sirius_agent.tools.base import ToolResult
 from sirius_agent.tools.registry import ToolRegistry
 

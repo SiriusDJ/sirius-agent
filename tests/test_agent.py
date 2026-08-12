@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
+from types import SimpleNamespace
 
 from sirius_agent.agent import StopReason, StreamCollector, TurnEventType, run_agent_loop
-from sirius_agent.providers.base import Message, StreamEvent, StreamEventType, TokenUsage
+from sirius_agent.providers.base import StreamEvent, StreamEventType, TokenUsage
 from sirius_agent.session import ConversationSession
 from sirius_agent.tools.base import ToolCall, ToolResult
 from sirius_agent.tools.registry import ToolRegistry
+
+_WORKSPACE_ROOT = Path(".")
+_FAKE_CONFIG = SimpleNamespace(name="fake-provider", model="fake-model")
 
 
 class _FakeKnownTool:
@@ -88,7 +93,9 @@ async def test_stream_collector_collects_tool_calls_without_yielding_them():
 class _NoToolProvider:
     """模拟模型直接给出最终文字回复，不请求任何工具。"""
 
-    async def stream_chat(self, messages, tools=None):
+    config = _FAKE_CONFIG
+
+    async def stream_chat(self, messages, tools=None, system_prompt=None):
         yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="done")
         yield StreamEvent(type=StreamEventType.DONE)
 
@@ -98,7 +105,7 @@ async def test_run_agent_loop_completes_without_tools():
     events = [
         e
         async for e in run_agent_loop(
-            _NoToolProvider(), _make_registry(), session, "hi", asyncio.Event()
+            _NoToolProvider(), _make_registry(), session, "hi", asyncio.Event(), _WORKSPACE_ROOT
         )
     ]
 
@@ -112,7 +119,9 @@ async def test_run_agent_loop_completes_without_tools():
 
 
 class _StreamErrorProvider:
-    async def stream_chat(self, messages, tools=None):
+    config = _FAKE_CONFIG
+
+    async def stream_chat(self, messages, tools=None, system_prompt=None):
         yield StreamEvent(type=StreamEventType.ERROR, error_message="network broke")
 
 
@@ -121,7 +130,7 @@ async def test_run_agent_loop_stream_error():
     events = [
         e
         async for e in run_agent_loop(
-            _StreamErrorProvider(), _make_registry(), session, "hi", asyncio.Event()
+            _StreamErrorProvider(), _make_registry(), session, "hi", asyncio.Event(), _WORKSPACE_ROOT
         )
     ]
 
@@ -134,7 +143,9 @@ async def test_run_agent_loop_stream_error():
 class _AlwaysCallsToolProvider:
     """模拟模型永远请求同一个已知工具，永不给出最终回复——用来触发迭代上限。"""
 
-    async def stream_chat(self, messages, tools=None):
+    config = _FAKE_CONFIG
+
+    async def stream_chat(self, messages, tools=None, system_prompt=None):
         yield StreamEvent(
             type=StreamEventType.TOOL_CALL,
             tool_call=ToolCall(id="t", name="fake_known", arguments={}),
@@ -147,7 +158,7 @@ async def test_run_agent_loop_max_iterations():
     events = [
         e
         async for e in run_agent_loop(
-            _AlwaysCallsToolProvider(), _make_registry(), session, "hi", asyncio.Event()
+            _AlwaysCallsToolProvider(), _make_registry(), session, "hi", asyncio.Event(), _WORKSPACE_ROOT
         )
     ]
 
@@ -166,11 +177,13 @@ async def test_run_agent_loop_max_iterations():
 class _ScriptedProvider:
     """按调用顺序依次消费预设的事件脚本，每次 stream_chat 调用对应一轮脚本。"""
 
+    config = _FAKE_CONFIG
+
     def __init__(self, scripts: list) -> None:
         self._scripts = scripts
         self.calls = 0
 
-    async def stream_chat(self, messages, tools=None):
+    async def stream_chat(self, messages, tools=None, system_prompt=None):
         events = self._scripts[self.calls]
         self.calls += 1
         for e in events:
@@ -194,7 +207,10 @@ async def test_unknown_tool_two_consecutive_rounds_stops():
     session = ConversationSession()
 
     events = [
-        e async for e in run_agent_loop(provider, _make_registry(), session, "hi", asyncio.Event())
+        e
+        async for e in run_agent_loop(
+            provider, _make_registry(), session, "hi", asyncio.Event(), _WORKSPACE_ROOT
+        )
     ]
 
     stopped = events[-1]
@@ -217,7 +233,10 @@ async def test_unknown_tool_single_occurrence_does_not_stop():
     session = ConversationSession()
 
     events = [
-        e async for e in run_agent_loop(provider, _make_registry(), session, "hi", asyncio.Event())
+        e
+        async for e in run_agent_loop(
+            provider, _make_registry(), session, "hi", asyncio.Event(), _WORKSPACE_ROOT
+        )
     ]
 
     stopped = events[-1]
@@ -260,13 +279,11 @@ async def test_safe_tools_run_concurrently():
     registry = ToolRegistry()
     registry.register(_SlowTool("slow_a", safe=True, delay=0.2))
     registry.register(_SlowTool("slow_b", safe=True, delay=0.2))
-    provider = _ScriptedProvider(
-        [_two_tool_call_events(), [StreamEvent(type=StreamEventType.DONE)]]
-    )
+    provider = _ScriptedProvider([_two_tool_call_events(), [StreamEvent(type=StreamEventType.DONE)]])
     session = ConversationSession()
 
     start = time.monotonic()
-    _ = [e async for e in run_agent_loop(provider, registry, session, "hi", asyncio.Event())]
+    _ = [e async for e in run_agent_loop(provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT)]
     elapsed = time.monotonic() - start
 
     assert elapsed < 0.35
@@ -276,13 +293,11 @@ async def test_unsafe_tools_run_serially():
     registry = ToolRegistry()
     registry.register(_SlowTool("slow_a", safe=False, delay=0.2))
     registry.register(_SlowTool("slow_b", safe=False, delay=0.2))
-    provider = _ScriptedProvider(
-        [_two_tool_call_events(), [StreamEvent(type=StreamEventType.DONE)]]
-    )
+    provider = _ScriptedProvider([_two_tool_call_events(), [StreamEvent(type=StreamEventType.DONE)]])
     session = ConversationSession()
 
     start = time.monotonic()
-    _ = [e async for e in run_agent_loop(provider, registry, session, "hi", asyncio.Event())]
+    _ = [e async for e in run_agent_loop(provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT)]
     elapsed = time.monotonic() - start
 
     assert elapsed >= 0.38
@@ -320,13 +335,16 @@ async def test_user_cancel_stops_before_next_iteration():
                 ),
                 StreamEvent(type=StreamEventType.DONE),
             ],
-            [StreamEvent(type=StreamEventType.TEXT_DELTA, text="should not run"), StreamEvent(type=StreamEventType.DONE)],
+            [
+                StreamEvent(type=StreamEventType.TEXT_DELTA, text="should not run"),
+                StreamEvent(type=StreamEventType.DONE),
+            ],
         ]
     )
     session = ConversationSession()
 
     events = [
-        e async for e in run_agent_loop(provider, registry, session, "hi", cancel_event)
+        e async for e in run_agent_loop(provider, registry, session, "hi", cancel_event, _WORKSPACE_ROOT)
     ]
 
     stopped = events[-1]
@@ -336,13 +354,19 @@ async def test_user_cancel_stops_before_next_iteration():
 
 
 class _RecordingToolsProvider:
-    """记录每次 stream_chat 收到的 tools 参数，供 Plan Mode 过滤断言使用。"""
+    """记录每次 stream_chat 收到的 messages/tools/system_prompt 参数，供 Plan Mode 相关断言使用。"""
+
+    config = _FAKE_CONFIG
 
     def __init__(self) -> None:
         self.received_tools: list = []
+        self.received_system_prompts: list = []
+        self.received_messages: list = []
 
-    async def stream_chat(self, messages, tools=None):
+    async def stream_chat(self, messages, tools=None, system_prompt=None):
         self.received_tools = list(tools or [])
+        self.received_system_prompts.append(system_prompt)
+        self.received_messages.append(list(messages))
         yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="ok")
         yield StreamEvent(type=StreamEventType.DONE)
 
@@ -357,8 +381,78 @@ async def test_plan_mode_only_exposes_safe_tools():
     _ = [
         e
         async for e in run_agent_loop(
-            provider, registry, session, "hi", asyncio.Event(), tools_enabled=False
+            provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT, tools_enabled=False
         )
     ]
 
     assert [t.name for t in provider.received_tools] == ["safe_tool"]
+
+
+async def test_run_agent_loop_passes_system_prompt_each_iteration():
+    registry = ToolRegistry()
+    provider = _RecordingToolsProvider()
+    session = ConversationSession()
+
+    _ = [e async for e in run_agent_loop(provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT)]
+
+    assert len(provider.received_system_prompts) == 1
+    assert provider.received_system_prompts[0] is not None
+    assert len(provider.received_system_prompts[0]) == 2
+
+
+async def test_plan_mode_reminder_injected_but_not_persisted():
+    registry = ToolRegistry()
+    provider = _RecordingToolsProvider()
+    session = ConversationSession()
+    session.enter_plan_mode()
+
+    _ = [
+        e
+        async for e in run_agent_loop(
+            provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT, tools_enabled=False
+        )
+    ]
+
+    last_request_messages = provider.received_messages[-1]
+    assert last_request_messages[-1].role == "system"
+    assert "计划模式" in last_request_messages[-1].content
+
+    persisted_roles = [m.role for m in session.get_messages()]
+    assert "system" not in persisted_roles
+
+
+async def test_plan_mode_reminder_not_injected_when_tools_enabled():
+    registry = ToolRegistry()
+    provider = _RecordingToolsProvider()
+    session = ConversationSession()
+
+    _ = [
+        e
+        async for e in run_agent_loop(
+            provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT, tools_enabled=True
+        )
+    ]
+
+    last_request_messages = provider.received_messages[-1]
+    assert all(m.role != "system" for m in last_request_messages)
+
+
+async def test_plan_mode_round_counter_advances_across_turns_and_alternates_full_brief():
+    registry = ToolRegistry()
+    provider = _RecordingToolsProvider()
+    session = ConversationSession()
+    session.enter_plan_mode()
+
+    for _ in range(4):
+        _ = [
+            e
+            async for e in run_agent_loop(
+                provider, registry, session, "turn", asyncio.Event(), _WORKSPACE_ROOT, tools_enabled=False
+            )
+        ]
+
+    reminders = [msgs[-1].content for msgs in provider.received_messages]
+    assert "计划模式" in reminders[0] and reminders[0] != "[仍处于计划模式]"  # 第 1 轮：完整版
+    assert reminders[1] == "[仍处于计划模式]"  # 第 2 轮：精简版
+    assert reminders[2] == "[仍处于计划模式]"  # 第 3 轮：精简版
+    assert "计划模式" in reminders[3] and reminders[3] != "[仍处于计划模式]"  # 第 4 轮：完整版重复

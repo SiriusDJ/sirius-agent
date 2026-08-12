@@ -11,7 +11,10 @@ from sirius_agent.tools.paths import PathOutsideWorkspaceError, resolve_safe_pat
 
 class EditFileTool:
     name = "edit_file"
-    description = "用唯一匹配替换的方式修改文件中的一段文本"
+    description = (
+        "用唯一匹配替换的方式修改文件中的一段文本。"
+        "编辑前必须先用 read_file 读过目标文件，不得在未读过内容的情况下直接编辑"
+    )
     parameters_schema = {
         "type": "object",
         "properties": {

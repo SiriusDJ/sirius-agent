@@ -19,29 +19,29 @@ from typing import Iterator, Optional, Protocol
 
 
 class StreamEventType(Enum):
-    TEXT_DELTA = "text_delta"          # 正式回答的文本增量
+    TEXT_DELTA = "text_delta"  # 正式回答的文本增量
     THINKING_DELTA = "thinking_delta"  # extended thinking 的文本增量
-    DONE = "done"                      # 本轮回复结束
-    ERROR = "error"                    # 请求过程中出错
+    DONE = "done"  # 本轮回复结束
+    ERROR = "error"  # 请求过程中出错
 
 
 @dataclass
 class StreamEvent:
     type: StreamEventType
-    text: Optional[str] = None          # TEXT_DELTA / THINKING_DELTA 时携带增量内容
+    text: Optional[str] = None  # TEXT_DELTA / THINKING_DELTA 时携带增量内容
     error_message: Optional[str] = None  # ERROR 时携带可读错误信息
 
 
 @dataclass
 class Message:
-    role: str      # "user" 或 "assistant"
+    role: str  # "user" 或 "assistant"
     content: str
 
 
 @dataclass
 class ProviderConfig:
     name: str
-    protocol: str        # "anthropic" 或 "openai"
+    protocol: str  # "anthropic" 或 "openai"
     model: str
     base_url: str
     api_key: str
@@ -69,10 +69,10 @@ class Provider(Protocol):
 ```python
 def load_provider_configs(path: str) -> list[ProviderConfig]: ...
 
-def select_provider_config(
-    configs: list[ProviderConfig], name: Optional[str]
-) -> ProviderConfig:
+
+def select_provider_config(configs: list[ProviderConfig], name: Optional[str]) -> ProviderConfig:
     """name 为 None 时返回 configs[0]；否则按 name 精确匹配，找不到抛 ConfigError"""
+
 
 class ConfigError(Exception):
     """配置缺字段、协议不支持、文件不存在、name 匹配不到等场景统一抛这个"""
@@ -90,10 +90,12 @@ def create_provider(config: ProviderConfig) -> Provider:
     """按 config.protocol 返回 AnthropicProvider 或 OpenAIProvider 实例；
     不支持的 protocol 抛 ConfigError"""
 
+
 # providers/anthropic_provider.py
 class AnthropicProvider:
     def __init__(self, config: ProviderConfig): ...
     def stream_chat(self, messages: list[Message]) -> Iterator[StreamEvent]: ...
+
 
 # providers/openai_provider.py
 class OpenAIProvider:
