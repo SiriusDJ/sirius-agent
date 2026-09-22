@@ -8,6 +8,17 @@ import sys
 from pathlib import Path
 
 from sirius_agent.config import ConfigError, load_provider_configs, select_provider_config
+from sirius_agent.permissions.engine import PermissionEngine
+from sirius_agent.permissions.gate import PermissionGate
+from sirius_agent.permissions.rule_store import (
+    RuleFileError,
+    load_rule_file,
+    local_rules_path,
+    project_rules_path,
+    user_rules_path,
+)
+from sirius_agent.permissions.rules import RuleSet
+from sirius_agent.permissions.types import PermissionMode, RuleSource
 from sirius_agent.providers.factory import create_provider
 from sirius_agent.session import ConversationSession
 from sirius_agent.tools.edit_file import EditFileTool
@@ -31,10 +42,32 @@ def _build_tool_registry(workspace_root: Path) -> ToolRegistry:
     return registry
 
 
+def _build_permission_gate(workspace_root: Path, mode: PermissionMode) -> PermissionGate:
+    """加载用户级/项目级/本地级三个规则文件并合并，组装出 PermissionEngine + PermissionGate。"""
+
+    try:
+        user_rules = load_rule_file(user_rules_path(), RuleSource.USER)
+        project_rules = load_rule_file(project_rules_path(workspace_root), RuleSource.PROJECT)
+        local_rules = load_rule_file(local_rules_path(workspace_root), RuleSource.LOCAL)
+    except RuleFileError as e:
+        print(f"错误：{e}", file=sys.stderr)
+        sys.exit(1)
+
+    rule_set = RuleSet.merge(user_rules, project_rules, local_rules)
+    engine = PermissionEngine(workspace_root, rule_set, mode)
+    return PermissionGate(engine, rule_set, local_rules_path(workspace_root))
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="sirius-agent", description="终端流式 AI 对话助手")
     parser.add_argument("--config", default="sirius-agent.yaml", help="YAML 配置文件路径（默认：./sirius-agent.yaml）")
     parser.add_argument("--provider", default=None, help="要使用的供应商 name（默认：配置文件中的第一个）")
+    parser.add_argument(
+        "--permission-mode",
+        default="default",
+        choices=["strict", "default", "permissive"],
+        help="初始权限模式（默认：default）",
+    )
     return parser.parse_args(argv)
 
 
@@ -51,8 +84,9 @@ def main() -> None:
 
     workspace_root = Path.cwd()
     tool_registry = _build_tool_registry(workspace_root)
+    permission_gate = _build_permission_gate(workspace_root, PermissionMode(args.permission_mode))
     session = ConversationSession()
-    asyncio.run(run_repl(provider, tool_registry, session, workspace_root))
+    asyncio.run(run_repl(provider, tool_registry, session, workspace_root, permission_gate))
 
 
 if __name__ == "__main__":

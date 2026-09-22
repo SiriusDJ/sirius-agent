@@ -12,12 +12,13 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from sirius_agent.permissions.gate import PermissionGate
 from sirius_agent.prompt.builder import build_system_prompt
 from sirius_agent.prompt.environment import gather_environment
 from sirius_agent.prompt.reminders import plan_mode_reminder
 from sirius_agent.providers.base import Message, Provider, StreamEvent, StreamEventType, TokenUsage
 from sirius_agent.session import ConversationSession
-from sirius_agent.tools.base import ToolResult
+from sirius_agent.tools.base import ToolCall, ToolResult
 from sirius_agent.tools.registry import ToolRegistry
 
 _MAX_ITERATIONS = 20
@@ -92,6 +93,7 @@ async def run_agent_loop(
     user_text: str,
     cancel_event: asyncio.Event,
     workspace_root: Path,
+    permission_gate: PermissionGate,
     tools_enabled: bool = True,
 ) -> AsyncIterator[TurnEvent]:
     """把 user_text 加入历史，反复"请求 → 工具 → 结果"直到触发某个停止条件。"""
@@ -170,8 +172,14 @@ async def run_agent_loop(
             )
             return
 
-        safe_calls = [tc for tc in known_calls if tool_registry.get(tc.name).safe]
-        unsafe_calls = [tc for tc in known_calls if not tool_registry.get(tc.name).safe]
+        allowed_calls: list[ToolCall] = []
+        async for turn_event in _run_permission_checks(
+            permission_gate, known_calls, session, iteration, allowed_calls
+        ):
+            yield turn_event
+
+        safe_calls = [tc for tc in allowed_calls if tool_registry.get(tc.name).safe]
+        unsafe_calls = [tc for tc in allowed_calls if not tool_registry.get(tc.name).safe]
 
         async for turn_event in _run_safe_batch(tool_registry, safe_calls, session, iteration):
             yield turn_event
@@ -187,6 +195,38 @@ async def run_agent_loop(
     yield TurnEvent(
         type=TurnEventType.STOPPED, stop_reason=StopReason.MAX_ITERATIONS, iteration=_MAX_ITERATIONS
     )
+
+
+async def _run_permission_checks(
+    permission_gate: PermissionGate,
+    calls: list[ToolCall],
+    session: ConversationSession,
+    iteration: int,
+    allowed_out: list[ToolCall],
+) -> AsyncIterator[TurnEvent]:
+    """对每个已知工具调用顺序跑一次权限判定（保证人在回路严格串行）。
+
+    被允许的调用追加进 allowed_out 供后续 safe/unsafe 批处理执行；
+    被拒绝的调用直接产出一对 TOOL_STARTED/TOOL_FINISHED 事件，并把失败结果写入历史。
+    """
+
+    for tc in calls:
+        outcome = await permission_gate.check(tc.name, tc.arguments)
+        if outcome.allowed:
+            allowed_out.append(tc)
+            continue
+
+        yield TurnEvent(
+            type=TurnEventType.TOOL_STARTED,
+            tool_name=tc.name,
+            tool_arguments=tc.arguments,
+            iteration=iteration,
+        )
+        result = ToolResult(ok=False, content=outcome.reason)
+        yield TurnEvent(
+            type=TurnEventType.TOOL_FINISHED, tool_name=tc.name, tool_result=result, iteration=iteration
+        )
+        session.add_tool_result_message(tc.id, result.content)
 
 
 async def _run_safe_batch(

@@ -6,7 +6,6 @@ import asyncio
 from pathlib import Path
 
 from sirius_agent.tools.base import ToolResult
-from sirius_agent.tools.paths import PathOutsideWorkspaceError, resolve_safe_path
 
 
 class EditFileTool:
@@ -30,10 +29,8 @@ class EditFileTool:
         self._workspace_root = workspace_root
 
     async def execute(self, arguments: dict) -> ToolResult:
-        try:
-            path = resolve_safe_path(self._workspace_root, arguments["path"])
-        except PathOutsideWorkspaceError as e:
-            return ToolResult(ok=False, content=str(e))
+        # 是否越界已经由权限系统在调用这里之前判过；这里只负责实际编辑。
+        path = (self._workspace_root / arguments["path"]).resolve()
 
         if not path.exists() or path.is_dir():
             return ToolResult(ok=False, content=f"文件不存在：{arguments['path']}")

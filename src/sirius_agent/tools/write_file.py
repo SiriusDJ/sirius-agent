@@ -6,7 +6,6 @@ import asyncio
 from pathlib import Path
 
 from sirius_agent.tools.base import ToolResult
-from sirius_agent.tools.paths import PathOutsideWorkspaceError, resolve_safe_path
 
 
 def _write_sync(path: Path, data: bytes) -> None:
@@ -31,10 +30,8 @@ class WriteFileTool:
         self._workspace_root = workspace_root
 
     async def execute(self, arguments: dict) -> ToolResult:
-        try:
-            path = resolve_safe_path(self._workspace_root, arguments["path"])
-        except PathOutsideWorkspaceError as e:
-            return ToolResult(ok=False, content=str(e))
+        # 是否越界已经由权限系统在调用这里之前判过；这里只负责实际写入。
+        path = (self._workspace_root / arguments["path"]).resolve()
 
         data = arguments["content"].encode("utf-8")
         await asyncio.to_thread(_write_sync, path, data)

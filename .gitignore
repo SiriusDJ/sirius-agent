@@ -11,3 +11,6 @@ wheels/
 
 # 本地供应商配置，可能含真实 API key，不要提交
 sirius-agent.yaml
+
+# 本地级权限规则（人在回路"永久允许"写入这里），项目级 .sirius-agent/rules.yaml 需要提交、不受影响
+.sirius-agent/rules.local.yaml
