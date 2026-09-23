@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from sirius_agent.permissions.engine import PermissionEngine
@@ -24,7 +25,11 @@ from sirius_agent.permissions.types import (
 
 
 class PermissionGate:
-    """权限系统的统一入口：check() 返回是否放行，需要时内部会触发人在回路。"""
+    """权限系统的统一入口：check() 返回是否放行，需要时内部会触发人在回路。
+
+    generalize_pattern/append_rule 默认指向 rules.py/rule_store.py 里的真实实现，
+    构造时可以换成别的实现（比如测试里想观察泛化过程、或者未来想换一种泛化策略）。
+    """
 
     def __init__(
         self,
@@ -32,11 +37,15 @@ class PermissionGate:
         rule_set: RuleSet,
         local_rules_path: Path,
         ask_callback: AskPermissionCallback | None = None,
+        pattern_generalizer: Callable[[str, str], str] = generalize_pattern,
+        rule_appender: Callable[[Path, Rule], None] = append_rule,
     ) -> None:
         self._engine = engine
         self._rule_set = rule_set
         self._local_rules_path = local_rules_path
         self._ask_callback = ask_callback
+        self._pattern_generalizer = pattern_generalizer
+        self._rule_appender = rule_appender
 
     @property
     def mode(self) -> PermissionMode:
@@ -64,7 +73,7 @@ class PermissionGate:
             tool_name=tool_name,
             arguments=arguments,
             reason=verdict.reason,
-            suggested_pattern=generalize_pattern(tool_name, verdict.match_text),
+            suggested_pattern=self._pattern_generalizer(tool_name, verdict.match_text),
         )
         human = await self._ask_callback(request)
 
@@ -83,5 +92,5 @@ class PermissionGate:
         # ALLOW_PERMANENT
         rule = Rule(tool_name, pattern, Decision.ALLOW, RuleSource.LOCAL)
         self._rule_set.add_session_rule(rule)
-        append_rule(self._local_rules_path, rule)
+        self._rule_appender(self._local_rules_path, rule)
         return PermissionOutcome(allowed=True, reason="用户已永久允许同类操作")

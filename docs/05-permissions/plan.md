@@ -9,7 +9,7 @@
 - **rule_store**：三级 YAML 规则文件的加载与追加写入，定位用户级/项目级/本地级文件路径，格式校验
 - **mode**：default/accept_edits/plan/bypass 四档权限模式的兜底默认值表，按 read/write/command 三类工具分别查表
 - **safelist**：硬编码的安全命令白名单，只对 execute_command 生效，优先级低于规则引擎、高于模式兜底；命中即返回 ALLOW，命令里出现 shell 元字符（管道/分号/重定向/命令替换）时一律不算命中
-- **engine**（PermissionEngine）：串联黑名单 → 沙箱越界判断 → 规则匹配 → 安全命令白名单 → 模式兜底，产出一个只读的判定结果（不涉及 I/O、不涉及用户交互）
+- **engine**（PermissionEngine）：把黑名单 → 沙箱越界判断 → 规则匹配 → 安全命令白名单 → 模式兜底组织成一条可注入的 `PermissionChecker` 检查链（构造时可传自定义 `checkers` 列表，缺省即这五层默认顺序），产出一个只读的判定结果（不涉及 I/O、不涉及用户交互）
 - **gate**（PermissionGate）：包裹 engine，在判定为 ask 时通过注入的回调发起人在回路询问，并根据用户选择（本次/本会话/永久）决定是否要更新内存规则集合或落盘到本地规则文件
 
 Agent Loop（agent.py）在每轮迭代对已知工具调用做完"是否已知工具"分流后，新增一步：对所有已知调用逐个（顺序，不并发）跑 `PermissionGate.check()`；被拒绝的调用直接产出失败的工具结果反馈给模型；被允许的调用才进入原有的 safe/unsafe 并发/串行批处理逻辑。人在回路的实际终端渲染（展示工具信息、读取用户选择）由 tui.py 实现为一个回调函数，通过依赖注入的方式交给 PermissionGate，agent.py 本身仍不直接碰终端，保持可脱离 TUI 单独测试的特性。人在回路的接入方式是 run_agent_loop 新增参数 + await 回调，而不是新增一种 TurnEvent 让外层轮询/用 Future 桥接——前者天然复用现有的 async/await 控制流，不需要引入额外的同步原语。
@@ -64,7 +64,7 @@ PermissionMode.PLAN 上线后接管了原本 tui.py 里 `/plan`、`/do` 那套�
 
 ### permissions.rules
 **职责：** Rule/RuleSet 的匹配与合并逻辑；pattern 匹配用 `fnmatch.fnmatchcase`（精确匹配是无通配符 pattern 的自然特例，不需要单独实现）；命中多条规则时按 deny>ask>allow 合并，不看模式精确度；提供把一次具体调用泛化成 glob pattern 的函数
-**对外接口：** `RuleSet`（`evaluate`、`add_session_rule`、`merge` 构造）、`generalize_pattern(tool_name, match_text) -> str`
+**对外接口：** `RuleSet`（构造/`merge` 都可传 `matcher: RuleMatcher = _matches` 覆盖默认匹配逻辑；`evaluate`、`add_session_rule`）、`generalize_pattern(tool_name, match_text) -> str`
 **依赖：** 无
 
 ### permissions.rule_store
@@ -82,14 +82,17 @@ PermissionMode.PLAN 上线后接管了原本 tui.py 里 `/plan`、`/do` 那套�
 **对外接口：** `is_safe_command(command: str) -> bool`
 **依赖：** 无
 
-### permissions.engine（PermissionEngine）
-**职责：** 只读判定，不涉及 I/O 与用户交互，串联黑名单 → 路径沙箱（复用 tools/paths.is_within_workspace） → 规则匹配 → 模式兜底
-**对外接口：** 构造 `(workspace_root, rule_set, mode)`；`evaluate(tool_name, arguments) -> PermissionVerdict`；`mode`（只读属性）；`set_mode(mode)`
+### permissions.engine（PermissionEngine + PermissionChecker 检查链）
+**职责：** 只读判定，不涉及 I/O 与用户交互；把黑名单/沙箱/规则/白名单/模式兜底组织成一条可注入的 `PermissionChecker` 检查链，依次跑到有一层给出结论为止
+**对外接口：**
+- `PermissionChecker`（Protocol）：`check(tool_name, arguments, match_text, mode) -> PermissionVerdict | None`，None 表示这层没有意见、交给下一层
+- 五个默认实现：`BlacklistChecker(blacklist_check=check_blacklist)`、`SandboxChecker(workspace_root, rule_set, workspace_check=is_within_workspace)`、`RuleChecker(rule_set)`、`SafelistChecker(safelist_check=is_safe_command)`、`ModeFallbackChecker(fallback=fallback_decision)`（必须是链上最后一层，从不返回 None）——每个 checker 依赖的纯函数都以关键字参数注入，默认值就是原本硬编码 import 的那个真实实现
+- `PermissionEngine`：构造 `(workspace_root, rule_set, mode, checkers=None)`——`checkers` 缺省时用 `_default_checkers()` 组装出上面五层，顺序即 spec.md F9 定义的判定顺序；`evaluate(tool_name, arguments) -> PermissionVerdict`；`mode`（只读属性）；`set_mode(mode)`
 **依赖：** blacklist、rules、mode、safelist、tools.paths
 
 ### permissions.gate（PermissionGate）
 **职责：** 包裹 engine；判定为 ask 时通过注入的回调发起人在回路；根据用户选择更新会话内规则或落盘本地规则文件
-**对外接口：** 构造 `(engine, rule_set, local_rules_path, ask_callback=None)`；`async check(tool_name, arguments) -> PermissionOutcome`；`mode`（只读属性，转发给 engine，供 agent.py 判断是否处于 plan 档）；`set_mode(mode)`（转发给 engine）；`set_ask_callback(callback)`
+**对外接口：** 构造 `(engine, rule_set, local_rules_path, ask_callback=None, pattern_generalizer=generalize_pattern, rule_appender=append_rule)`——后两个默认指向 rules.py/rule_store.py 的真实实现，可注入替换；`async check(tool_name, arguments) -> PermissionOutcome`；`mode`（只读属性，转发给 engine，供 agent.py 判断是否处于 plan 档）；`set_mode(mode)`（转发给 engine）；`set_ask_callback(callback)`
 **依赖：** engine、rules、rule_store
 
 ## 文件组织
@@ -172,3 +175,5 @@ run_repl（tui.py）：
 | 权限模式档位 | 四档 default/accept_edits/plan/bypass，按 read/write/command 三类工具查表，取代最初的三档 strict/default/permissive + 只读/有副作用二分 | 跟 Claude Code 自己的模式命名和语义对齐；plan 档顺带接管原本跟权限系统平行的 tools_enabled 开关，只用一套"模式"概念，不用维护两套互相独立又要保持同步的状态 |
 | 安全命令白名单的两种匹配模式 | "允许任意后缀参数"和"只允许精确匹配"分两个集合，而不是像最初参考的实现那样统一用一套前缀匹配逻辑 | 有些命令的某些 flag 组合有副作用（如 `git branch -d`、`date --set`），统一前缀匹配会让这些危险变体也跟着被放行；版本查询类命令（如 `npm -v`）也不能保证 CLI 一定在该 flag 处停止解析后续参数，所以只精确匹配，不给拼接空间 |
 | 白名单在五层里的位置 | 黑名单 > 规则引擎 > 白名单 > 模式兜底 | 用户显式配置的规则（包括 deny）必须能覆盖硬编码的默认白名单，白名单只是"规则集合完全没命中时，比直接问用户更友好"的一层，不应该有更高的优先级 |
+| PermissionEngine 内部结构 | 五层判定拆成实现同一个 `PermissionChecker` Protocol 的类，`evaluate()` 依次跑链条到第一个非 None 结果；构造时可传自定义 `checkers` 覆盖默认链条 | 这次会话里短时间内连续加了两层（四档模式改造、安全命令白名单），且 spec 的"不做的事"里明确写了网络请求限制/资源配额/审计日志留给后续章节——预期还会继续加层；链条化之后新增一层只需要写一个新 Checker 类插进默认列表，不用碰 `evaluate()` 内部的 if/elif；黑名单/白名单具体条目仍然写死在各自模块里，没有因此变成可配置，不违背 spec 的"不可配置"要求 |
+| 注入范围的边界 | `RuleSet` 的匹配函数、四个 Checker 各自依赖的纯函数（`check_blacklist`/`is_within_workspace`/`is_safe_command`/`fallback_decision`）、`PermissionGate` 的 `generalize_pattern`/`append_rule`，全部改成构造时可传参数覆盖，默认值就是原来硬编码 import 的真实实现；`__main__.py` 的 `_build_permission_gate`（组合根）、`blacklist.py`/`safelist.py` 内部的具体条目列表、`mode.py` 的兜底表本身，都没有改成可注入 | 前者是"代码层面可替换的依赖"，跟用户能不能从 YAML/CLI 配置无关，不会改变任何默认运行时行为；后者要么本来就该是组合根直接持有具体实现的地方（`__main__.py`），要么一旦注入就等于让黑名单/白名单/模式表变成可配置，直接违反 spec 明确写的"不可被配置放开" |

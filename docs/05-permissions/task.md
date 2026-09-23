@@ -24,6 +24,10 @@
 | 修改（T12） | `src/sirius_agent/prompt/reminders.py` | 提醒文案不再点名已废弃的 /do 命令 |
 | 新建（T13） | `src/sirius_agent/permissions/safelist.py` | 安全命令白名单、is_safe_command |
 | 修改（T13） | `src/sirius_agent/permissions/engine.py` | 接入白名单，插在规则引擎和模式兜底之间 |
+| 修改（T14） | `src/sirius_agent/permissions/engine.py` | 重构成 PermissionChecker 检查链，五层各自拆成一个 Checker 类 |
+| 修改（T15） | `src/sirius_agent/permissions/rules.py` | RuleSet 的匹配函数可注入 |
+| 修改（T15） | `src/sirius_agent/permissions/engine.py` | 四个 Checker 各自的纯函数依赖可注入 |
+| 修改（T15） | `src/sirius_agent/permissions/gate.py` | pattern_generalizer/rule_appender 可注入 |
 
 ## T1: 定义权限类型（types.py）
 
@@ -209,12 +213,44 @@
 - engine 集成测试：命中白名单且无规则时直接 ALLOW；配置一条显式 deny/ask 规则后能压过白名单；黑名单优先于白名单生效；非白名单命令继续走模式兜底；命令拼接（如 `ls; npm run build`）不会靠白名单被放行
 - `uv run ruff check src/sirius_agent` 通过
 
+## T14: 把 PermissionEngine.evaluate() 重构成可注入的检查链
+
+**文件：** `src/sirius_agent/permissions/engine.py`
+**依赖：** T13
+**背景：** 用户要求排查代码里哪些地方该做依赖注入却没做。审计下来，`PermissionGate`/`run_agent_loop`/`run_repl` 这些有状态、需要测试替身的地方已经在做构造函数/参数注入；黑名单/白名单具体条目按 spec 要求保持硬编码不注入。唯一站得住脚的重构点是 `evaluate()` 内部那串写死的 if/elif——这次会话里短时间内连续加了两层（T12 四档模式、T13 白名单），且 spec"不做的事"里写明网络限制/资源配额/审计日志留给后续章节，预期还会继续加层。
+**步骤：**
+1. 定义 `PermissionChecker`（`typing.Protocol`）：`check(tool_name, arguments, match_text, mode) -> PermissionVerdict | None`，`None` 表示这层没有意见
+2. 把原来 `evaluate()` 里的五段逻辑各自拆成一个实现该 Protocol 的类：`BlacklistChecker`、`SandboxChecker(workspace_root, rule_set)`、`RuleChecker(rule_set)`、`SafelistChecker`、`ModeFallbackChecker`（必须是链上最后一层，从不返回 None）
+3. 写 `_default_checkers(workspace_root, rule_set) -> list[PermissionChecker]`，按 spec F9 的判定顺序组装这五个
+4. `PermissionEngine.__init__` 新增 `checkers: list[PermissionChecker] | None = None` 参数，缺省时调用 `_default_checkers(...)`
+5. `evaluate()` 改成对 `self._checkers` 遍历调用 `.check(...)`，拿到第一个非 `None` 结果就返回；遍历完还没结果说明 `ModeFallbackChecker` 没有正确兜底，属于内部错误，抛 `AssertionError`
+
+**验证：**
+- 全部既有 engine/gate/agent 回归测试原样重跑一遍，行为跟重构前逐字节一致（不传 `checkers` 参数走默认链条）
+- 新增测试：手动构造一个自定义 `checkers` 列表（如只传 `[BlacklistChecker(), ModeFallbackChecker()]`），验证 `PermissionEngine` 真的按传入的链条跑，而不是内部悄悄换回默认那五层；再验证跳过 `SafelistChecker` 后白名单命令会落到模式兜底而不是被白名单放行，证明链条顺序和"提前截断"逻辑生效
+- `uv run ruff check src/sirius_agent` 通过
+
+## T15: 把注入范围从 engine 扩到 rules/gate
+
+**文件：** `src/sirius_agent/permissions/rules.py`、`src/sirius_agent/permissions/engine.py`、`src/sirius_agent/permissions/gate.py`
+**依赖：** T14
+**背景：** 用户要求"尽量每个板块都 injection"。T14 只把 `PermissionEngine.evaluate()` 本身的检查链变成可注入，链条里每个 Checker 内部依然直接 import 调用 `check_blacklist`/`is_within_workspace`/`is_safe_command`/`fallback_decision`；`RuleSet` 的匹配逻辑、`PermissionGate` 用到的 `generalize_pattern`/`append_rule` 也都是直接 import。这次把这几处也改成构造时可传参数覆盖、默认值指向原本的真实实现——`blacklist.py`/`safelist.py`/`mode.py` 内部的具体条目/表格不动（那些改了就等于变相让黑名单可配置，违反 spec），`__main__.py` 的组合根也不动（它本来就该直接持有具体实现）。
+**步骤：**
+1. `rules.py`：新增类型别名 `RuleMatcher = Callable[[Rule, str, str], bool]`；`RuleSet.__init__` 和 `RuleSet.merge` 都新增 `matcher: RuleMatcher = _matches` 参数，`evaluate()` 内部改用 `self._matcher(...)`
+2. `engine.py`：`BlacklistChecker.__init__` 新增 `blacklist_check: Callable[[str], BlacklistRule | None] = check_blacklist`；`SandboxChecker.__init__` 新增 `workspace_check: Callable[[Path, Path], bool] = is_within_workspace`；`SafelistChecker.__init__` 新增 `safelist_check: Callable[[str], bool] = is_safe_command`；`ModeFallbackChecker.__init__` 新增 `fallback: Callable[[str, PermissionMode], Decision] = fallback_decision`；每个类的 `check()` 方法体改用 `self._xxx(...)` 而不是直接调模块函数
+3. `gate.py`：`PermissionGate.__init__` 新增 `pattern_generalizer: Callable[[str, str], str] = generalize_pattern` 和 `rule_appender: Callable[[Path, Rule], None] = append_rule` 两个参数，`check()` 内部改用 `self._pattern_generalizer(...)`/`self._rule_appender(...)`
+
+**验证：**
+- 全部既有回归测试（T2-T14 各自的验证脚本）原样重跑，不传任何新参数时行为逐字节不变
+- 新增测试：对 `RuleSet`、四个 Checker、`PermissionGate` 各自注入一个明显不同于默认实现的假函数/假 matcher，验证判定结果确实按注入的那个跑，而不是偷偷用了真实实现（比如给 `SandboxChecker` 注入一个"永远返回越界"的 `workspace_check`，验证判定变成 DENY）
+- `uv run ruff check src/sirius_agent` 通过
+
 ## 执行顺序
 
 ```
 T1 ─┬→ T2 ─┐
     ├→ T3 ─┼→ T6 ─┐
-    ├→ T4 ─┤      ├→ T7 → T8 → T9 → T10 → T11 → T12 → T13
+    ├→ T4 ─┤      ├→ T7 → T8 → T9 → T10 → T11 → T12 → T13 → T14 → T15
     └→ T5 ─┘      │
           T4 ─────┘（T7 同时依赖 T4）
 ```
