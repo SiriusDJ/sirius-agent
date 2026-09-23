@@ -13,6 +13,7 @@ from enum import Enum
 from pathlib import Path
 
 from sirius_agent.permissions.gate import PermissionGate
+from sirius_agent.permissions.types import PermissionMode
 from sirius_agent.prompt.builder import build_system_prompt
 from sirius_agent.prompt.environment import gather_environment
 from sirius_agent.prompt.reminders import plan_mode_reminder
@@ -94,7 +95,6 @@ async def run_agent_loop(
     cancel_event: asyncio.Event,
     workspace_root: Path,
     permission_gate: PermissionGate,
-    tools_enabled: bool = True,
 ) -> AsyncIterator[TurnEvent]:
     """把 user_text 加入历史，反复"请求 → 工具 → 结果"直到触发某个停止条件。"""
 
@@ -111,14 +111,16 @@ async def run_agent_loop(
         env = await gather_environment(workspace_root, provider.config.model)
         system_prompt = build_system_prompt(env)
 
+        plan_mode = permission_gate.mode == PermissionMode.PLAN
+
         # Plan Mode 提醒按 Agent Loop 轮次动态构造，只拼进这一次请求的消息列表，
         # 不落进 session 的持久历史——不影响后续轮次、也不污染可缓存的稳定内容。
         request_messages = session.get_messages()
-        if not tools_enabled:
+        if plan_mode:
             reminder = plan_mode_reminder(session.next_plan_mode_round())
             request_messages.append(Message(role="system", content=reminder))
 
-        active_tools = tool_registry.list_tools(only_safe=not tools_enabled)
+        active_tools = tool_registry.list_tools(only_safe=plan_mode)
         collector = StreamCollector()
         async for turn_event in collector.consume(
             provider.stream_chat(request_messages, tools=active_tools, system_prompt=system_prompt),

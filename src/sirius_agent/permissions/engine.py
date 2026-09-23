@@ -1,4 +1,4 @@
-"""权限判定引擎：串联黑名单、路径沙箱、规则匹配、权限模式兜底，产出只读的判定结果。
+"""权限判定引擎：串联黑名单、路径沙箱、规则匹配、安全命令白名单、权限模式兜底，产出只读的判定结果。
 
 不涉及任何 I/O 或用户交互——需要人在回路确认时，由上层 PermissionGate 负责。
 """
@@ -10,6 +10,7 @@ from pathlib import Path
 from sirius_agent.permissions.blacklist import check_blacklist
 from sirius_agent.permissions.mode import fallback_decision
 from sirius_agent.permissions.rules import RuleSet
+from sirius_agent.permissions.safelist import is_safe_command
 from sirius_agent.permissions.types import Decision, PermissionMode, PermissionVerdict
 from sirius_agent.tools.paths import is_within_workspace
 
@@ -33,6 +34,10 @@ class PermissionEngine:
         self._workspace_root = workspace_root
         self._rule_set = rule_set
         self._mode = mode
+
+    @property
+    def mode(self) -> PermissionMode:
+        return self._mode
 
     def set_mode(self, mode: PermissionMode) -> None:
         self._mode = mode
@@ -59,10 +64,10 @@ class PermissionEngine:
                         reason=f"越界路径，命中显式规则 {tool_name}({rule_hit[1].pattern})：allow",
                         match_text=match_text,
                     )
-                if self._mode == PermissionMode.PERMISSIVE:
+                if self._mode == PermissionMode.BYPASS:
                     return PermissionVerdict(
                         decision=Decision.ALLOW,
-                        reason="越界路径，当前为放行模式",
+                        reason="越界路径，当前为 bypass 模式",
                         match_text=match_text,
                     )
                 return PermissionVerdict(
@@ -77,6 +82,13 @@ class PermissionEngine:
             return PermissionVerdict(
                 decision=decision,
                 reason=f"命中规则 {tool_name}({rule.pattern})：{decision.value}",
+                match_text=match_text,
+            )
+
+        if tool_name == "execute_command" and is_safe_command(match_text):
+            return PermissionVerdict(
+                decision=Decision.ALLOW,
+                reason="命中安全命令白名单",
                 match_text=match_text,
             )
 

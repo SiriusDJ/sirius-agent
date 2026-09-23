@@ -15,6 +15,15 @@
 | 修改 | `src/sirius_agent/agent.py` | 接入权限检查阶段 |
 | 修改 | `src/sirius_agent/tui.py` | 人在回路终端交互、/permission 命令 |
 | 修改 | `src/sirius_agent/__main__.py` | --permission-mode 参数、组装 gate |
+| 修改（T12） | `src/sirius_agent/permissions/types.py` | PermissionMode 改四档 |
+| 修改（T12） | `src/sirius_agent/permissions/mode.py` | 兜底表改 read/write/command 三分类 |
+| 修改（T12） | `src/sirius_agent/permissions/engine.py`、`gate.py` | PERMISSIVE→BYPASS，新增 mode 只读属性 |
+| 修改（T12） | `src/sirius_agent/agent.py` | 删 tools_enabled，改读 permission_gate.mode |
+| 修改（T12） | `src/sirius_agent/tui.py` | 删 /plan、/do，合并进 /permission 四档 |
+| 修改（T12） | `src/sirius_agent/__main__.py` | --permission-mode 可选值改四档 |
+| 修改（T12） | `src/sirius_agent/prompt/reminders.py` | 提醒文案不再点名已废弃的 /do 命令 |
+| 新建（T13） | `src/sirius_agent/permissions/safelist.py` | 安全命令白名单、is_safe_command |
+| 修改（T13） | `src/sirius_agent/permissions/engine.py` | 接入白名单，插在规则引擎和模式兜底之间 |
 
 ## T1: 定义权限类型（types.py）
 
@@ -164,12 +173,48 @@
 
 **验证：** 对照 checklist.md（下一阶段产出）逐项打勾
 
+## T12: 权限模式改造为 default/accept_edits/plan/bypass 四档
+
+**文件：** `src/sirius_agent/permissions/types.py`、`mode.py`、`engine.py`、`gate.py`、`src/sirius_agent/agent.py`、`src/sirius_agent/tui.py`、`src/sirius_agent/__main__.py`、`src/sirius_agent/prompt/reminders.py`
+**依赖：** T1-T11 已完成，且已通过一轮真实终端端到端验收
+**背景：** 验收后在对话中发现原来的三档 strict/default/permissive + 只读/有副作用二分兜底表，跟 Claude Code 自己的权限模式（default/acceptEdits/plan/bypassPermissions）不一致；同时 tui.py 里 `/plan`、`/do` 是一套独立于权限系统之外的开关（`tools_enabled`），容易跟权限模式的语义打架。这次把两者合并成一套。
+**步骤：**
+1. `types.py`：`PermissionMode` 改成 `DEFAULT`、`ACCEPT_EDITS`、`PLAN`、`BYPASS` 四个成员，去掉 `STRICT`/`PERMISSIVE`
+2. `mode.py`：把"只读/有副作用"二分改成 read（read_file/glob_files/grep_content）/write（write_file/edit_file）/command（execute_command）三分类，按四档 × 三类查表；read 类四档都兜底 allow
+3. `engine.py`：沙箱越界分支里 `mode == PermissionMode.PERMISSIVE` 改成 `mode == PermissionMode.BYPASS`；新增只读属性 `mode`
+4. `gate.py`：新增只读属性 `mode`（转发 `engine.mode`），供 agent.py 判断是否处于 plan 档
+5. `agent.py`：`run_agent_loop` 删掉 `tools_enabled` 参数；改成每轮读 `permission_gate.mode == PermissionMode.PLAN` 决定 `active_tools = tool_registry.list_tools(only_safe=plan_mode)` 和是否注入 `plan_mode_reminder`
+6. `tui.py`：删掉 `_PLAN_COMMAND`/`_DO_COMMAND` 及其处理分支；`_handle_permission_command` 的可选值改成 `{"default", "accept_edits", "plan", "bypass"}`，切到 `plan` 档时调用 `session.enter_plan_mode()`；`run_repl` 不再维护本地 `plan_mode` 变量，`run_agent_loop` 调用去掉 `tools_enabled=...`
+7. `__main__.py`：`--permission-mode` 的 `choices` 改成四档
+8. `prompt/reminders.py`：`_PLAN_MODE_FULL` 文案里"用户会输入 /do 切回全工具模式"改成不点名具体命令的通用说法
+
+**验证：**
+- 单元回归：mode.py 新的四档 × 三分类查表全部覆盖测试；engine.py 原有 7 个场景（含沙箱越界+BYPASS 放行）改用新枚举名重跑，全部通过；agent.py 的假 PermissionGate 补上 `.mode` 属性后重跑通过；tui.py 的 `create_ask_callback`/`_handle_permission_command`（新签名多了 `session` 参数）重跑通过，含 `/permission plan` 会调用 `session.enter_plan_mode()`、`/permission bogus` 报错不崩溃；`__main__.py` 的 `--permission-mode` 参数与 `_build_permission_gate` 用新枚举重跑通过
+- `uv run ruff check src/sirius_agent` 全量通过，`uv run python -c "import ..."` 全模块导入无报错
+- 遗留：这次改动涉及交互命令（`/plan`/`/do` 退役），未在真实终端里重新跑一遍 checklist.md 的端到端场景，后续有需要时应至少手动验证一次 `/permission plan`（确认只读工具生效、提醒文案还在）和 `/permission bypass`（确认不再询问直接放行）
+
+## T13: 新增安全命令白名单
+
+**文件：** `src/sirius_agent/permissions/safelist.py`、`src/sirius_agent/permissions/engine.py`
+**依赖：** T6（engine 已存在）
+**背景：** 除了黑名单硬拦截已知危险命令，再加一层"已知安全命令直接放行"，减少 default/plan 模式下对 `ls`/`git status` 这类明显无害的只读命令也要每次确认的打扰；这一层严格说是原来"五层"之外新增的第六个机制（不重新编号章节标题）。
+**步骤：**
+1. `safelist.py`：定义两个 frozenset——`_SAFE_PREFIX_COMMANDS`（允许接任意后缀参数，只收不存在破坏性 flag 变体的命令，如 `ls`/`pwd`/`cat`/`git status`/`git log`/`git diff`/`git show`）和 `_SAFE_EXACT_COMMANDS`（只允许精确匹配、不允许任何后缀，如 `npm -v`/`java -version`/`git remote -v`，覆盖 Windows 和类 Unix 常用工具的版本查询）
+2. 定义 `_SHELL_METACHARACTERS = ("|", ";", "&", ">", "<", "$(", "`", "\n")`
+3. 实现 `is_safe_command(command: str) -> bool`：先 strip 判空、判元字符（命中任意一个直接 False）；再判断是否精确匹配 `_SAFE_EXACT_COMMANDS`；否则判断是否等于或以 `<prefix> ` 开头命中 `_SAFE_PREFIX_COMMANDS` 中的某一项
+4. `engine.py`：在规则引擎判断之后、模式兜底之前插入一步——`tool_name == "execute_command" and is_safe_command(match_text)` 时直接返回 `PermissionVerdict(ALLOW, reason="命中安全命令白名单", match_text)`
+
+**验证：**
+- `is_safe_command` 单元测试：覆盖白名单命令本身、带合法后缀参数、精确匹配类命令不允许接后缀、以及命令注入类输入（`;`/`&&`/`|`/`>`/`` ` ``/`$(`）全部判 False，跟已知危险变体（`git branch -d`、`date --set`、`find -exec`）故意不在名单里
+- engine 集成测试：命中白名单且无规则时直接 ALLOW；配置一条显式 deny/ask 规则后能压过白名单；黑名单优先于白名单生效；非白名单命令继续走模式兜底；命令拼接（如 `ls; npm run build`）不会靠白名单被放行
+- `uv run ruff check src/sirius_agent` 通过
+
 ## 执行顺序
 
 ```
 T1 ─┬→ T2 ─┐
     ├→ T3 ─┼→ T6 ─┐
-    ├→ T4 ─┤      ├→ T7 → T8 → T9 → T10 → T11
+    ├→ T4 ─┤      ├→ T7 → T8 → T9 → T10 → T11 → T12 → T13
     └→ T5 ─┘      │
           T4 ─────┘（T7 同时依赖 T4）
 ```

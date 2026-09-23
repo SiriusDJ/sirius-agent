@@ -65,7 +65,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--permission-mode",
         default="default",
-        choices=["strict", "default", "permissive"],
+        choices=["default", "accept_edits", "plan", "bypass"],
         help="初始权限模式（默认：default）",
     )
     return parser.parse_args(argv)

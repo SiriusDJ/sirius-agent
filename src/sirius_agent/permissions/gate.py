@@ -38,6 +38,10 @@ class PermissionGate:
         self._local_rules_path = local_rules_path
         self._ask_callback = ask_callback
 
+    @property
+    def mode(self) -> PermissionMode:
+        return self._engine.mode
+
     def set_mode(self, mode: PermissionMode) -> None:
         self._engine.set_mode(mode)
 

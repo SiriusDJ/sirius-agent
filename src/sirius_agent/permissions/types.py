@@ -20,11 +20,16 @@ class Decision(Enum):
 
 
 class PermissionMode(Enum):
-    """整体权限模式：严格/默认/放行，作为规则未命中时的兜底默认值。"""
+    """整体权限模式，作为规则未命中时按 read/write/command 三类工具给出的兜底默认值。
 
-    STRICT = "strict"
+    PLAN 模式额外接管了"只暴露只读工具给模型"的职责（原来 tools_enabled 那套），
+    不再是一个跟权限系统平行的独立开关。
+    """
+
     DEFAULT = "default"
-    PERMISSIVE = "permissive"
+    ACCEPT_EDITS = "accept_edits"
+    PLAN = "plan"
+    BYPASS = "bypass"
 
 
 class RuleSource(Enum):

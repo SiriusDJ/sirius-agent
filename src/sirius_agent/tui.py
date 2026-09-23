@@ -1,6 +1,7 @@
 """交互式对话主循环：读取用户输入、驱动 Agent Loop、流式渲染事件。
 
-支持 /plan、/do 两段式指令切换计划模式；循环执行期间可按 Esc/Ctrl+C 取消当前 Agent Loop。
+支持 /permission default|accept_edits|plan|bypass 切换权限模式（plan 档即计划模式）；
+循环执行期间可按 Esc/Ctrl+C 取消当前 Agent Loop。
 """
 
 from __future__ import annotations
@@ -28,9 +29,8 @@ from sirius_agent.session import ConversationSession
 from sirius_agent.tools.registry import ToolRegistry
 
 _EXIT_COMMANDS = {"/exit"}
-_PLAN_COMMAND = "/plan"
-_DO_COMMAND = "/do"
 _PERMISSION_COMMAND = "/permission"
+_PERMISSION_MODE_NAMES = {"default", "accept_edits", "plan", "bypass"}
 _THINKING_STYLE = "dim italic"
 _TOOL_STARTED_STYLE = "cyan"
 _TOOL_SUCCESS_STYLE = "dim"
@@ -217,7 +217,6 @@ async def run_repl(
 
     prompt_session: PromptSession = PromptSession()
     console = Console()
-    plan_mode = False
     watcher = _CancelWatcher()
     permission_gate.set_ask_callback(create_ask_callback(console, prompt_session, watcher))
 
@@ -232,17 +231,8 @@ async def run_repl(
         stripped = text.strip()
         if stripped in _EXIT_COMMANDS:
             break
-        if stripped == _PLAN_COMMAND:
-            plan_mode = True
-            session.enter_plan_mode()
-            console.print("[已进入计划模式，仅只读工具可用，输入 /do 切回全工具模式]", style="bold cyan")
-            continue
-        if stripped == _DO_COMMAND:
-            plan_mode = False
-            console.print("[已切回全工具模式]", style="bold cyan")
-            continue
         if stripped.startswith(_PERMISSION_COMMAND):
-            _handle_permission_command(stripped, permission_gate, console)
+            _handle_permission_command(stripped, permission_gate, session, console)
             continue
         if not stripped:
             continue
@@ -258,7 +248,6 @@ async def run_repl(
                 cancel_event,
                 workspace_root,
                 permission_gate,
-                tools_enabled=not plan_mode,
             ):
                 _render(console, turn_event)
         finally:
@@ -267,14 +256,21 @@ async def run_repl(
     console.print("再见！")
 
 
-def _handle_permission_command(stripped: str, permission_gate: PermissionGate, console: Console) -> None:
-    """解析 `/permission strict|default|permissive` 并切换权限模式。"""
+def _handle_permission_command(
+    stripped: str, permission_gate: PermissionGate, session: ConversationSession, console: Console
+) -> None:
+    """解析 `/permission default|accept_edits|plan|bypass` 并切换权限模式。
+
+    切到 plan 档时重置计划模式提醒的轮次计数器，跟原来 /plan 命令的行为一致。
+    """
 
     parts = stripped.split()
-    if len(parts) != 2 or parts[1] not in {"strict", "default", "permissive"}:
-        console.print("用法：/permission strict|default|permissive", style="bold red")
+    if len(parts) != 2 or parts[1] not in _PERMISSION_MODE_NAMES:
+        console.print("用法：/permission default|accept_edits|plan|bypass", style="bold red")
         return
 
     mode = PermissionMode(parts[1])
     permission_gate.set_mode(mode)
+    if mode == PermissionMode.PLAN:
+        session.enter_plan_mode()
     console.print(f"[已切换权限模式：{mode.value}]", style="bold cyan")

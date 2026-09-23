@@ -7,11 +7,14 @@
 - **blacklist**：硬编码正则黑名单，只对 execute_command 的 command 参数生效，命中即返回 DENY，不接受任何配置
 - **rules**：规则的内存表示与匹配/合并逻辑（RuleSet），支持精确+glob 匹配，多条命中时按 deny>ask>allow 合并
 - **rule_store**：三级 YAML 规则文件的加载与追加写入，定位用户级/项目级/本地级文件路径，格式校验
-- **mode**：三档权限模式（严格/默认/放行）的兜底默认值表，只读工具与有副作用工具分开处理
-- **engine**（PermissionEngine）：串联黑名单 → 沙箱越界判断 → 规则匹配 → 模式兜底，产出一个只读的判定结果（不涉及 I/O、不涉及用户交互）
+- **mode**：default/accept_edits/plan/bypass 四档权限模式的兜底默认值表，按 read/write/command 三类工具分别查表
+- **safelist**：硬编码的安全命令白名单，只对 execute_command 生效，优先级低于规则引擎、高于模式兜底；命中即返回 ALLOW，命令里出现 shell 元字符（管道/分号/重定向/命令替换）时一律不算命中
+- **engine**（PermissionEngine）：串联黑名单 → 沙箱越界判断 → 规则匹配 → 安全命令白名单 → 模式兜底，产出一个只读的判定结果（不涉及 I/O、不涉及用户交互）
 - **gate**（PermissionGate）：包裹 engine，在判定为 ask 时通过注入的回调发起人在回路询问，并根据用户选择（本次/本会话/永久）决定是否要更新内存规则集合或落盘到本地规则文件
 
 Agent Loop（agent.py）在每轮迭代对已知工具调用做完"是否已知工具"分流后，新增一步：对所有已知调用逐个（顺序，不并发）跑 `PermissionGate.check()`；被拒绝的调用直接产出失败的工具结果反馈给模型；被允许的调用才进入原有的 safe/unsafe 并发/串行批处理逻辑。人在回路的实际终端渲染（展示工具信息、读取用户选择）由 tui.py 实现为一个回调函数，通过依赖注入的方式交给 PermissionGate，agent.py 本身仍不直接碰终端，保持可脱离 TUI 单独测试的特性。人在回路的接入方式是 run_agent_loop 新增参数 + await 回调，而不是新增一种 TurnEvent 让外层轮询/用 Future 桥接——前者天然复用现有的 async/await 控制流，不需要引入额外的同步原语。
+
+PermissionMode.PLAN 上线后接管了原本 tui.py 里 `/plan`、`/do` 那套独立的 `tools_enabled` 开关：agent.py 不再单独接收 `tools_enabled` 参数，而是每轮直接读 `permission_gate.mode == PermissionMode.PLAN` 来决定这一轮要不要只把只读工具暴露给模型、要不要注入计划模式提醒。tui.py 相应地把 `/plan`、`/do` 两个命令合并进 `/permission default|accept_edits|plan|bypass`，切到 `plan` 档时仍会调用 `session.enter_plan_mode()` 重置提醒轮次计数器，行为跟原来的 `/plan` 命令一致。
 
 路径沙箱判断直接复用 tools/paths.py 中已有的 `is_within_workspace`，不重复实现一套路径解析逻辑，避免两处判断行为不一致。
 
@@ -21,7 +24,7 @@ Agent Loop（agent.py）在每轮迭代对已知工具调用做完"是否已知�
 判定结果三态：`ALLOW`、`ASK`、`DENY`
 
 ### PermissionMode（枚举）
-三档权限模式：`STRICT`（严格）、`DEFAULT`（默认）、`PERMISSIVE`（放行）
+四档权限模式：`DEFAULT`、`ACCEPT_EDITS`、`PLAN`、`BYPASS`（与 Claude Code 自己的模式命名对齐）
 
 ### RuleSource（枚举）
 规则来源，只用于展示判定依据，不参与优先级计算：`USER`、`PROJECT`、`LOCAL`、`SESSION`（人在回路"本会话允许"产生、只存在内存里的规则）
@@ -70,18 +73,23 @@ Agent Loop（agent.py）在每轮迭代对已知工具调用做完"是否已知�
 **依赖：** 无
 
 ### permissions.mode
-**职责：** 权限模式的兜底默认值表，只读工具（read_file/glob_files/grep_content）与有副作用工具分开处理
+**职责：** 权限模式的兜底默认值表，按 read（read_file/glob_files/grep_content）、write（write_file/edit_file）、command（execute_command）三类工具分别查表；read 类四档都兜底 allow
 **对外接口：** `fallback_decision(tool_name: str, mode: PermissionMode) -> Decision`
+**依赖：** 无
+
+### permissions.safelist
+**职责：** 硬编码的安全命令白名单，区分"允许接任意参数"（如 `ls`/`git status`，不存在破坏性 flag 变体）和"仅允许精确匹配、不允许任何后缀"（如 `npm -v`，避免尾随参数被夹带进真正有副作用的子命令）两类；命中前先做 shell 元字符检查（`| ; & > < $( `` \n`），出现即不算命中，防止拼接命令绕过
+**对外接口：** `is_safe_command(command: str) -> bool`
 **依赖：** 无
 
 ### permissions.engine（PermissionEngine）
 **职责：** 只读判定，不涉及 I/O 与用户交互，串联黑名单 → 路径沙箱（复用 tools/paths.is_within_workspace） → 规则匹配 → 模式兜底
-**对外接口：** 构造 `(workspace_root, rule_set, mode)`；`evaluate(tool_name, arguments) -> PermissionVerdict`；`set_mode(mode)`
-**依赖：** blacklist、rules、mode、tools.paths
+**对外接口：** 构造 `(workspace_root, rule_set, mode)`；`evaluate(tool_name, arguments) -> PermissionVerdict`；`mode`（只读属性）；`set_mode(mode)`
+**依赖：** blacklist、rules、mode、safelist、tools.paths
 
 ### permissions.gate（PermissionGate）
 **职责：** 包裹 engine；判定为 ask 时通过注入的回调发起人在回路；根据用户选择更新会话内规则或落盘本地规则文件
-**对外接口：** 构造 `(engine, rule_set, local_rules_path, ask_callback=None)`；`async check(tool_name, arguments) -> PermissionOutcome`；`set_mode(mode)`（转发给 engine）；`set_ask_callback(callback)`
+**对外接口：** 构造 `(engine, rule_set, local_rules_path, ask_callback=None)`；`async check(tool_name, arguments) -> PermissionOutcome`；`mode`（只读属性，转发给 engine，供 agent.py 判断是否处于 plan 档）；`set_mode(mode)`（转发给 engine）；`set_ask_callback(callback)`
 **依赖：** engine、rules、rule_store
 
 ## 文件组织
@@ -95,13 +103,17 @@ src/sirius_agent/permissions/
 ├── rules.py         — RuleSet、pattern 匹配、generalize_pattern()
 ├── rule_store.py     — YAML 加载/追加写入、三级文件路径定位、RuleFileError
 ├── mode.py            — fallback_decision()
-├── engine.py           — PermissionEngine
-└── gate.py              — PermissionGate
+├── safelist.py         — is_safe_command()
+├── engine.py            — PermissionEngine
+└── gate.py               — PermissionGate
 
 # 改动的既有文件
-src/sirius_agent/agent.py     — 新增 _run_permission_checks，run_agent_loop 新增 permission_gate 参数
-src/sirius_agent/tui.py        — 新增 create_ask_callback()（终端渲染人在回路询问）、/permission 斜杠命令
-src/sirius_agent/__main__.py    — 新增 --permission-mode 参数，组装规则文件加载 + PermissionEngine + PermissionGate
+src/sirius_agent/agent.py     — 新增 _run_permission_checks，run_agent_loop 新增 permission_gate 参数、
+                           删掉 tools_enabled（改读 permission_gate.mode 判断是否 plan 档）
+src/sirius_agent/tui.py        — 新增 create_ask_callback()（终端渲染人在回路询问）、
+                           /permission default|accept_edits|plan|bypass 斜杠命令（取代原来的 /plan、/do）
+src/sirius_agent/__main__.py    — 新增 --permission-mode 参数（四档可选），组装规则文件加载 + PermissionEngine + PermissionGate
+src/sirius_agent/prompt/reminders.py — 计划模式提醒文案里不再点名具体斜杠命令
 ```
 
 ## 模块交互
@@ -116,11 +128,14 @@ src/sirius_agent/__main__.py    — 新增 --permission-mode 参数，组装规�
   → 传给 run_repl(provider, tool_registry, session, workspace_root, permission_gate)
 
 run_repl（tui.py）：
-  → gate.set_ask_callback(create_ask_callback(console, prompt_session))
-  → 处理 /permission <mode> 斜杠命令时调用 gate.set_mode(mode)
+  → gate.set_ask_callback(create_ask_callback(console, prompt_session, watcher))
+  → 处理 /permission <mode> 斜杠命令时调用 gate.set_mode(mode)，mode==PLAN 时额外调用 session.enter_plan_mode()
   → 调用 run_agent_loop(..., permission_gate=gate)
 
 每轮迭代（agent.py run_agent_loop）：
+  plan_mode = permission_gate.mode == PermissionMode.PLAN
+  → active_tools = tool_registry.list_tools(only_safe=plan_mode)
+  → plan_mode 为真时把 plan_mode_reminder(...) 拼进这一轮请求消息
   已知工具调用列表 known_calls
   → _run_permission_checks(gate, known_calls, session, iteration, allowed_out)
       对每个 tc 顺序执行（保证 ask 严格串行）：
@@ -128,9 +143,10 @@ run_repl（tui.py）：
           → engine.evaluate(tc.name, tc.arguments)
               execute_command → blacklist.check_blacklist(command)：命中→DENY，结束
               路径类工具 → is_within_workspace 判断越界
-                越界 → rule_set.evaluate 找显式 allow，或 mode==PERMISSIVE → ALLOW；否则 DENY，结束
+                越界 → rule_set.evaluate 找显式 allow，或 mode==BYPASS → ALLOW；否则 DENY，结束
               rule_set.evaluate(tool_name, match_text)：命中 → 按结果返回，结束
-              都未命中 → mode.fallback_decision(tool_name, mode)
+              execute_command 且 safelist.is_safe_command(command) → ALLOW，结束
+              都未命中 → mode.fallback_decision(tool_name, mode)（按 read/write/command 三类查表）
           → 若 verdict.decision == ASK：
               request = PermissionRequest(..., suggested_pattern=generalize_pattern(...))
               human = await ask_callback(request)     ← tui.py 渲染询问、读取用户输入
@@ -153,3 +169,6 @@ run_repl（tui.py）：
 | 沙箱判断复用 | 直接复用 `tools/paths.py` 的 `is_within_workspace`，不重复实现 | 避免权限层和工具层各自维护一套路径解析逻辑、行为不一致 |
 | 规则 YAML 格式 | 顶层 `rules:` 列表，每项 `tool`/`pattern`/`action` 三字段 | 结构简单、人工可读可编辑，校验逻辑单一 |
 | engine 与 gate 拆分 | engine 只做纯判定（无 I/O），gate 包一层处理人在回路与落盘 | engine 可以脱离终端单独做单元测试；gate 是唯一有副作用、需要异步等待的入口 |
+| 权限模式档位 | 四档 default/accept_edits/plan/bypass，按 read/write/command 三类工具查表，取代最初的三档 strict/default/permissive + 只读/有副作用二分 | 跟 Claude Code 自己的模式命名和语义对齐；plan 档顺带接管原本跟权限系统平行的 tools_enabled 开关，只用一套"模式"概念，不用维护两套互相独立又要保持同步的状态 |
+| 安全命令白名单的两种匹配模式 | "允许任意后缀参数"和"只允许精确匹配"分两个集合，而不是像最初参考的实现那样统一用一套前缀匹配逻辑 | 有些命令的某些 flag 组合有副作用（如 `git branch -d`、`date --set`），统一前缀匹配会让这些危险变体也跟着被放行；版本查询类命令（如 `npm -v`）也不能保证 CLI 一定在该 flag 处停止解析后续参数，所以只精确匹配，不给拼接空间 |
+| 白名单在五层里的位置 | 黑名单 > 规则引擎 > 白名单 > 模式兜底 | 用户显式配置的规则（包括 deny）必须能覆盖硬编码的默认白名单，白名单只是"规则集合完全没命中时，比直接问用户更友好"的一层，不应该有更高的优先级 |
