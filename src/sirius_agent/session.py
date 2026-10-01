@@ -25,12 +25,18 @@ class ConversationSession:
         self._plan_mode_round += 1
         return self._plan_mode_round
 
-    def add_assistant_message(self, content: str) -> None:
-        self._messages.append(Message(role="assistant", content=content))
+    def add_assistant_message(self, content: str, reasoning_content: str | None = None) -> None:
+        self._messages.append(Message(role="assistant", content=content, reasoning_content=reasoning_content))
 
-    def add_assistant_tool_call_message(self, content: str, tool_calls: list[ToolCall]) -> None:
-        """模型这一步请求了工具调用（可能同时带文字）。"""
-        self._messages.append(Message(role="assistant", content=content, tool_calls=tool_calls))
+    def add_assistant_tool_call_message(
+        self, content: str, tool_calls: list[ToolCall], reasoning_content: str | None = None
+    ) -> None:
+        """模型这一步请求了工具调用（可能同时带文字和思考过程）。"""
+        self._messages.append(
+            Message(
+                role="assistant", content=content, tool_calls=tool_calls, reasoning_content=reasoning_content
+            )
+        )
 
     def add_tool_result_message(self, tool_call_id: str, content: str) -> None:
         """把某次 ToolCall 的执行结果写回历史。"""

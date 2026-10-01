@@ -57,7 +57,9 @@ async def main() -> None:
         sys.exit(1)
 
     if provider_config.protocol != "anthropic":
-        print(f"错误：这个脚本是 Anthropic 专属的，'{provider_config.name}' 协议是 {provider_config.protocol}")
+        print(
+            f"错误：这个脚本是 Anthropic 专属的，'{provider_config.name}' 协议是 {provider_config.protocol}"
+        )
         sys.exit(1)
 
     workspace_root = Path.cwd()

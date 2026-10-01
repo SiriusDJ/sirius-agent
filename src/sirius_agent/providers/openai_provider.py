@@ -21,26 +21,34 @@ def _to_openai_messages(messages: list[Message]) -> list[dict]:
     for m in messages:
         if m.role == "tool":
             result.append({"role": "tool", "tool_call_id": m.tool_call_id, "content": m.content})
-        elif m.role == "assistant" and m.tool_calls:
-            result.append(
-                {
-                    "role": "assistant",
-                    "content": m.content or None,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(tc.arguments),
-                            },
-                        }
-                        for tc in m.tool_calls
-                    ],
-                }
-            )
+            continue
+
+        if m.role == "assistant" and m.tool_calls:
+            item: dict = {
+                "role": "assistant",
+                "content": m.content or None,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments),
+                        },
+                    }
+                    for tc in m.tool_calls
+                ],
+            }
         else:
-            result.append({"role": m.role, "content": m.content})
+            item = {"role": m.role, "content": m.content}
+
+        # DeepSeek 思考模式：带 tools 的请求必须原样回传历史中每条 assistant 的 reasoning_content，
+        # 否则返回 400。只有端点真的返回过思考内容才会带上，标准 OpenAI 端点不受影响。
+        if m.role == "assistant" and m.reasoning_content:
+            item["reasoning_content"] = m.reasoning_content
+            if item["content"] is None:
+                item["content"] = ""
+        result.append(item)
     return result
 
 
@@ -102,6 +110,11 @@ class OpenAIProvider:
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
+
+                # DeepSeek 等兼容端点把思考过程放在非标准字段 reasoning_content 里
+                reasoning = getattr(delta, "reasoning_content", None)
+                if reasoning:
+                    yield StreamEvent(type=StreamEventType.THINKING_DELTA, text=reasoning)
 
                 if delta.content:
                     yield StreamEvent(type=StreamEventType.TEXT_DELTA, text=delta.content)

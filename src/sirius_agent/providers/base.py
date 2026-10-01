@@ -31,7 +31,7 @@ class StreamEventType(Enum):
     """归一化后的流式事件类型。"""
 
     TEXT_DELTA = "text_delta"  # 正式回答的文本增量
-    THINKING_DELTA = "thinking_delta"  # extended thinking 的文本增量（仅 Anthropic 会产出）
+    THINKING_DELTA = "thinking_delta"  # 思考过程增量（Anthropic thinking / DeepSeek reasoning_content）
     TOOL_CALL = "tool_call"  # 模型请求一次工具调用，参数已拼接、解析完整
     USAGE = "usage"  # 本次请求的 token 用量，流结束前产出
     DONE = "done"  # 本轮回复正常结束
@@ -59,6 +59,8 @@ class Message:
     # role="assistant" 且模型请求了工具调用时使用
     tool_call_id: str | None = None
     # role="tool" 时必填，标识这是对哪一次 ToolCall 的结果响应
+    reasoning_content: str | None = None
+    # role="assistant" 时模型这一步的思考过程；DeepSeek 思考模式带 tools 时要求后续请求原样回传
     # role="system" 用于运行期补充指令注入（如 Plan Mode 提醒），
     # 各 Provider 的翻译函数负责按自己协议的约束把它表达出来
 

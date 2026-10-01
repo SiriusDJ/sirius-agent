@@ -173,3 +173,67 @@ async def test_usage_event_defaults_cache_fields_to_zero_when_details_absent():
     usage_event = next(e for e in collected if e.type == StreamEventType.USAGE)
     assert usage_event.usage.cache_read_input_tokens == 0
     assert usage_event.usage.cache_creation_input_tokens == 0
+
+
+async def test_reasoning_content_delta_becomes_thinking_event():
+    """DeepSeek 思考模式：delta.reasoning_content 产出 THINKING_DELTA，正文仍走 TEXT_DELTA。"""
+
+    chunks = [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(reasoning_content="先想想", content=None, tool_calls=None)
+                )
+            ],
+            usage=None,
+        ),
+        _chunk(content="答案"),
+    ]
+    provider = _make_provider(chunks)
+
+    events = [e async for e in provider.stream_chat([Message(role="user", content="hi")])]
+
+    kinds = [
+        (e.type, e.text)
+        for e in events
+        if e.type in (StreamEventType.THINKING_DELTA, StreamEventType.TEXT_DELTA)
+    ]
+    assert kinds == [(StreamEventType.THINKING_DELTA, "先想想"), (StreamEventType.TEXT_DELTA, "答案")]
+
+
+def test_to_openai_messages_passes_back_reasoning_content():
+    from sirius_agent.tools.base import ToolCall
+
+    messages = [
+        Message(role="user", content="hi"),
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[ToolCall(id="c1", name="read_file", arguments={"path": "a"})],
+            reasoning_content="需要读文件",
+        ),
+        Message(role="tool", content="data", tool_call_id="c1"),
+        Message(role="assistant", content="完成", reasoning_content="读完了"),
+    ]
+
+    result = _to_openai_messages(messages)
+
+    assert result[1]["reasoning_content"] == "需要读文件"
+    assert result[1]["content"] == ""  # 带思考内容时 content 不能是 null
+    assert result[3] == {"role": "assistant", "content": "完成", "reasoning_content": "读完了"}
+
+
+def test_to_openai_messages_without_reasoning_unchanged():
+    """标准 OpenAI 端点从不返回思考内容，请求体保持原样（不出现 reasoning_content 字段）。"""
+
+    from sirius_agent.tools.base import ToolCall
+
+    messages = [
+        Message(role="assistant", content="", tool_calls=[ToolCall(id="c1", name="x", arguments={})]),
+        Message(role="assistant", content="done"),
+    ]
+
+    result = _to_openai_messages(messages)
+
+    assert result[0]["content"] is None and "reasoning_content" not in result[0]
+    assert result[1] == {"role": "assistant", "content": "done"}

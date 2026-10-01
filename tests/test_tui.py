@@ -1,4 +1,4 @@
-"""tui.py 的 /plan /do 模式切换与事件渲染测试（不测真实终端按键监听，那部分在 checklist 用 tmux 验证）。"""
+"""tui.py 的 /permission 模式切换与事件渲染测试（不测真实终端按键监听，那部分在 checklist 用 tmux 验证）。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from rich.console import Console
 
 from sirius_agent import tui
 from sirius_agent.agent import StopReason, TurnEvent, TurnEventType
+from sirius_agent.permissions.types import PermissionMode
 from sirius_agent.providers.base import TokenUsage
 from sirius_agent.session import ConversationSession
 from sirius_agent.tools.base import ToolResult
@@ -28,13 +29,26 @@ class _FakePromptSession:
             raise EOFError from None
 
 
-async def test_plan_do_toggle_controls_tools_enabled(monkeypatch):
-    recorded_tools_enabled: list[bool] = []
+class _RecordingGate:
+    """PermissionGate 的替身：只记录模式切换，run_repl 会调用 set_ask_callback/set_mode。"""
+
+    def __init__(self) -> None:
+        self.mode = PermissionMode.DEFAULT
+
+    def set_ask_callback(self, callback) -> None:
+        self.callback = callback
+
+    def set_mode(self, mode: PermissionMode) -> None:
+        self.mode = mode
+
+
+async def test_permission_command_switches_mode_seen_by_agent_loop(monkeypatch):
+    recorded_modes: list[PermissionMode] = []
 
     async def _fake_run_agent_loop(
-        provider, tool_registry, session, user_text, cancel_event, workspace_root, tools_enabled=True
+        provider, tool_registry, session, user_text, cancel_event, workspace_root, permission_gate
     ):
-        recorded_tools_enabled.append(tools_enabled)
+        recorded_modes.append(permission_gate.mode)
         yield TurnEvent(type=TurnEventType.STOPPED, stop_reason=StopReason.COMPLETED)
 
     async def _fake_watch_cancel_keys(cancel_event):
@@ -42,14 +56,18 @@ async def test_plan_do_toggle_controls_tools_enabled(monkeypatch):
 
     monkeypatch.setattr(tui, "run_agent_loop", _fake_run_agent_loop)
     monkeypatch.setattr(tui, "_watch_cancel_keys", _fake_watch_cancel_keys)
-    inputs = ["hello", "/plan", "hello again", "/do", "final", "/exit"]
+    inputs = ["hello", "/permission plan", "hello again", "/permission default", "final", "/exit"]
     monkeypatch.setattr(tui, "PromptSession", lambda: _FakePromptSession(inputs))
 
     await tui.run_repl(
-        provider=object(), tool_registry=object(), session=ConversationSession(), workspace_root=Path(".")
+        provider=object(),
+        tool_registry=object(),
+        session=ConversationSession(),
+        workspace_root=Path("."),
+        permission_gate=_RecordingGate(),
     )
 
-    assert recorded_tools_enabled == [True, False, True]
+    assert recorded_modes == [PermissionMode.DEFAULT, PermissionMode.PLAN, PermissionMode.DEFAULT]
 
 
 def test_render_covers_all_event_types_and_stop_reasons():

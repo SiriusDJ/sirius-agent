@@ -62,14 +62,17 @@ class StreamCollector:
 
     def __init__(self) -> None:
         self.text: str = ""
+        self.thinking: str | None = None  # 本次请求的完整思考过程；没有思考输出时为 None
         self.tool_calls: list = []
         self.usage: TokenUsage | None = None
         self.error_message: str | None = None
 
     async def consume(self, stream: AsyncIterator[StreamEvent], iteration: int) -> AsyncIterator[TurnEvent]:
         parts: list[str] = []
+        thinking_parts: list[str] = []
         async for event in stream:
             if event.type == StreamEventType.THINKING_DELTA:
+                thinking_parts.append(event.text or "")
                 yield TurnEvent(type=TurnEventType.THINKING_DELTA, text=event.text, iteration=iteration)
             elif event.type == StreamEventType.TEXT_DELTA:
                 parts.append(event.text or "")
@@ -85,6 +88,7 @@ class StreamCollector:
             elif event.type == StreamEventType.DONE:
                 break
         self.text = "".join(parts)
+        self.thinking = "".join(thinking_parts) or None
 
 
 async def run_agent_loop(
@@ -138,12 +142,14 @@ async def run_agent_loop(
             return
 
         if not collector.tool_calls:
-            if collector.text:
-                session.add_assistant_message(collector.text)
+            if collector.text or collector.thinking:
+                session.add_assistant_message(collector.text, reasoning_content=collector.thinking)
             yield TurnEvent(type=TurnEventType.STOPPED, stop_reason=StopReason.COMPLETED, iteration=iteration)
             return
 
-        session.add_assistant_tool_call_message(collector.text, collector.tool_calls)
+        session.add_assistant_tool_call_message(
+            collector.text, collector.tool_calls, reasoning_content=collector.thinking
+        )
 
         known_calls = []
         round_has_unknown = False

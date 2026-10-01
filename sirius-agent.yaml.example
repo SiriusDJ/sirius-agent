@@ -2,7 +2,7 @@
 #
 # 每个供应商配置包含六个字段：
 #   name      供应商标识名，用 `sirius-agent --provider <name>` 选择使用哪个
-#   protocol  决定走哪家协议，目前支持 anthropic / openai
+#   protocol  决定走哪家协议，目前支持 anthropic / openai（DeepSeek 等 OpenAI 兼容端点用 openai）
 #   model     指定模型名
 #   base_url  请求的 API 地址
 #   api_key   鉴权密钥；支持 ${ENV_VAR} 占位符从环境变量读取，也可以直接写明文
@@ -13,6 +13,18 @@
 # 复制这份文件为 sirius-agent.yaml 后再填入真实配置：
 #   copy sirius-agent.yaml.example sirius-agent.yaml
 # sirius-agent.yaml 已经在 .gitignore 里，不会被提交。
+
+- name: deepseek
+  protocol: openai
+  model: deepseek-v4-pro
+  base_url: https://api.deepseek.com
+  api_key: "${DEEPSEEK_API_KEY}"
+
+- name: deepseek-flash
+  protocol: openai
+  model: deepseek-v4-flash
+  base_url: https://api.deepseek.com
+  api_key: "${DEEPSEEK_API_KEY}"
 
 - name: claude-prod
   protocol: anthropic

@@ -1,0 +1,32 @@
+# Sirius-Agent MCP server 配置示例
+#
+# 两个位置的配置会按 server 名合并，项目级同名 server 整条覆盖用户级：
+#   用户级：~/.sirius-agent/config.yaml
+#   项目级：<工作目录>/.sirius-agent.yaml
+#
+# 每个 server 必须写 type：
+#   stdio  本地子进程；必填 command，可选 args（字符串数组）、env（字符串 map）
+#   http   远程 Streamable HTTP；必填 url，可选 headers（字符串 map）
+#
+# env / headers 的值支持 ${VAR} 从环境变量读取（未定义的变量会展开为空串并告警）；
+# 密钥一律用 ${VAR} 引用，不要写明文。command / args / url 不做展开。
+#
+# 远端工具注册名为 mcp__<server>__<tool>。权限规则（.sirius-agent/rules.yaml）里可以这样写：
+#   - {tool: "mcp__github__*", pattern: "*", action: allow}
+#
+# 复制为 .sirius-agent.yaml 后按需修改：
+#   copy .sirius-agent.yaml.example .sirius-agent.yaml
+
+mcp_servers:
+  github:
+    type: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
+
+  internal-api:
+    type: http
+    url: https://mcp.example.com/mcp
+    headers:
+      Authorization: "Bearer ${MCP_API_TOKEN}"

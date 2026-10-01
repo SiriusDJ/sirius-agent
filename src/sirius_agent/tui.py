@@ -179,7 +179,7 @@ def create_ask_callback(
             while True:
                 try:
                     choice_text = (await prompt_session.prompt_async("选择 [1-4]: ")).strip()
-                except (KeyboardInterrupt, EOFError):
+                except KeyboardInterrupt, EOFError:
                     return HumanDecision(choice=HumanChoice.DENY_ONCE)
 
                 choice = _PERMISSION_CHOICE_BY_INPUT.get(choice_text)
@@ -195,7 +195,7 @@ def create_ask_callback(
                 custom = (
                     await prompt_session.prompt_async("直接回车采用建议规则，或输入自定义模式：")
                 ).strip()
-            except (KeyboardInterrupt, EOFError):
+            except KeyboardInterrupt, EOFError:
                 return HumanDecision(choice=HumanChoice.DENY_ONCE)
 
             pattern = custom if custom else request.suggested_pattern

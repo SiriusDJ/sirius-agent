@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from sirius_agent.agent import StopReason, StreamCollector, TurnEventType, run_agent_loop
+from sirius_agent.permissions.types import PermissionMode, PermissionOutcome
 from sirius_agent.providers.base import StreamEvent, StreamEventType, TokenUsage
 from sirius_agent.session import ConversationSession
 from sirius_agent.tools.base import ToolCall, ToolResult
@@ -15,6 +16,20 @@ from sirius_agent.tools.registry import ToolRegistry
 
 _WORKSPACE_ROOT = Path(".")
 _FAKE_CONFIG = SimpleNamespace(name="fake-provider", model="fake-model")
+
+
+class _AllowAllGate:
+    """PermissionGate 的替身：所有调用一律放行，只暴露 run_agent_loop 用到的 mode 与 check。"""
+
+    def __init__(self, mode: PermissionMode) -> None:
+        self.mode = mode
+
+    async def check(self, tool_name: str, arguments: dict) -> PermissionOutcome:
+        return PermissionOutcome(allowed=True, reason="测试替身：全部放行")
+
+
+def _gate(mode: PermissionMode = PermissionMode.DEFAULT) -> _AllowAllGate:
+    return _AllowAllGate(mode)
 
 
 class _FakeKnownTool:
@@ -105,7 +120,7 @@ async def test_run_agent_loop_completes_without_tools():
     events = [
         e
         async for e in run_agent_loop(
-            _NoToolProvider(), _make_registry(), session, "hi", asyncio.Event(), _WORKSPACE_ROOT
+            _NoToolProvider(), _make_registry(), session, "hi", asyncio.Event(), _WORKSPACE_ROOT, _gate()
         )
     ]
 
@@ -130,7 +145,7 @@ async def test_run_agent_loop_stream_error():
     events = [
         e
         async for e in run_agent_loop(
-            _StreamErrorProvider(), _make_registry(), session, "hi", asyncio.Event(), _WORKSPACE_ROOT
+            _StreamErrorProvider(), _make_registry(), session, "hi", asyncio.Event(), _WORKSPACE_ROOT, _gate()
         )
     ]
 
@@ -158,7 +173,13 @@ async def test_run_agent_loop_max_iterations():
     events = [
         e
         async for e in run_agent_loop(
-            _AlwaysCallsToolProvider(), _make_registry(), session, "hi", asyncio.Event(), _WORKSPACE_ROOT
+            _AlwaysCallsToolProvider(),
+            _make_registry(),
+            session,
+            "hi",
+            asyncio.Event(),
+            _WORKSPACE_ROOT,
+            _gate(),
         )
     ]
 
@@ -209,7 +230,7 @@ async def test_unknown_tool_two_consecutive_rounds_stops():
     events = [
         e
         async for e in run_agent_loop(
-            provider, _make_registry(), session, "hi", asyncio.Event(), _WORKSPACE_ROOT
+            provider, _make_registry(), session, "hi", asyncio.Event(), _WORKSPACE_ROOT, _gate()
         )
     ]
 
@@ -235,7 +256,7 @@ async def test_unknown_tool_single_occurrence_does_not_stop():
     events = [
         e
         async for e in run_agent_loop(
-            provider, _make_registry(), session, "hi", asyncio.Event(), _WORKSPACE_ROOT
+            provider, _make_registry(), session, "hi", asyncio.Event(), _WORKSPACE_ROOT, _gate()
         )
     ]
 
@@ -283,7 +304,12 @@ async def test_safe_tools_run_concurrently():
     session = ConversationSession()
 
     start = time.monotonic()
-    _ = [e async for e in run_agent_loop(provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT)]
+    _ = [
+        e
+        async for e in run_agent_loop(
+            provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT, _gate()
+        )
+    ]
     elapsed = time.monotonic() - start
 
     assert elapsed < 0.35
@@ -297,7 +323,12 @@ async def test_unsafe_tools_run_serially():
     session = ConversationSession()
 
     start = time.monotonic()
-    _ = [e async for e in run_agent_loop(provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT)]
+    _ = [
+        e
+        async for e in run_agent_loop(
+            provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT, _gate()
+        )
+    ]
     elapsed = time.monotonic() - start
 
     assert elapsed >= 0.38
@@ -344,7 +375,10 @@ async def test_user_cancel_stops_before_next_iteration():
     session = ConversationSession()
 
     events = [
-        e async for e in run_agent_loop(provider, registry, session, "hi", cancel_event, _WORKSPACE_ROOT)
+        e
+        async for e in run_agent_loop(
+            provider, registry, session, "hi", cancel_event, _WORKSPACE_ROOT, _gate()
+        )
     ]
 
     stopped = events[-1]
@@ -381,7 +415,7 @@ async def test_plan_mode_only_exposes_safe_tools():
     _ = [
         e
         async for e in run_agent_loop(
-            provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT, tools_enabled=False
+            provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT, _gate(PermissionMode.PLAN)
         )
     ]
 
@@ -393,7 +427,12 @@ async def test_run_agent_loop_passes_system_prompt_each_iteration():
     provider = _RecordingToolsProvider()
     session = ConversationSession()
 
-    _ = [e async for e in run_agent_loop(provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT)]
+    _ = [
+        e
+        async for e in run_agent_loop(
+            provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT, _gate()
+        )
+    ]
 
     assert len(provider.received_system_prompts) == 1
     assert provider.received_system_prompts[0] is not None
@@ -409,7 +448,7 @@ async def test_plan_mode_reminder_injected_but_not_persisted():
     _ = [
         e
         async for e in run_agent_loop(
-            provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT, tools_enabled=False
+            provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT, _gate(PermissionMode.PLAN)
         )
     ]
 
@@ -429,7 +468,7 @@ async def test_plan_mode_reminder_not_injected_when_tools_enabled():
     _ = [
         e
         async for e in run_agent_loop(
-            provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT, tools_enabled=True
+            provider, registry, session, "hi", asyncio.Event(), _WORKSPACE_ROOT, _gate()
         )
     ]
 
@@ -447,7 +486,13 @@ async def test_plan_mode_round_counter_advances_across_turns_and_alternates_full
         _ = [
             e
             async for e in run_agent_loop(
-                provider, registry, session, "turn", asyncio.Event(), _WORKSPACE_ROOT, tools_enabled=False
+                provider,
+                registry,
+                session,
+                "turn",
+                asyncio.Event(),
+                _WORKSPACE_ROOT,
+                _gate(PermissionMode.PLAN),
             )
         ]
 
@@ -456,3 +501,45 @@ async def test_plan_mode_round_counter_advances_across_turns_and_alternates_full
     assert reminders[1] == "[仍处于计划模式]"  # 第 2 轮：精简版
     assert reminders[2] == "[仍处于计划模式]"  # 第 3 轮：精简版
     assert "计划模式" in reminders[3] and reminders[3] != "[仍处于计划模式]"  # 第 4 轮：完整版重复
+
+
+class _ThinkingThenToolProvider:
+    """第一轮：思考 + 工具调用；第二轮：思考 + 最终回答。用于验证思考过程被写入历史。"""
+
+    config = _FAKE_CONFIG
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream_chat(self, messages, tools=None, system_prompt=None):
+        self.calls += 1
+        if self.calls == 1:
+            yield StreamEvent(type=StreamEventType.THINKING_DELTA, text="要调用")
+            yield StreamEvent(type=StreamEventType.THINKING_DELTA, text="工具")
+            yield StreamEvent(
+                type=StreamEventType.TOOL_CALL, tool_call=ToolCall(id="c1", name="fake_known", arguments={})
+            )
+        else:
+            yield StreamEvent(type=StreamEventType.THINKING_DELTA, text="可以回答了")
+            yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="done")
+        yield StreamEvent(type=StreamEventType.DONE)
+
+
+async def test_thinking_is_persisted_on_assistant_messages():
+    session = ConversationSession()
+
+    _ = [
+        e
+        async for e in run_agent_loop(
+            _ThinkingThenToolProvider(),
+            _make_registry(),
+            session,
+            "hi",
+            asyncio.Event(),
+            _WORKSPACE_ROOT,
+            _gate(),
+        )
+    ]
+
+    assistants = [m for m in session.get_messages() if m.role == "assistant"]
+    assert [m.reasoning_content for m in assistants] == ["要调用工具", "可以回答了"]
